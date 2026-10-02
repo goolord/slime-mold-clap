@@ -1,0 +1,29 @@
+{
+  "name": "Shuttle Streaming",
+  "author": "Physarum",
+  "category": "texture",
+  "tags": [
+    "fast",
+    "moving",
+    "bright"
+  ],
+  "description": "Fast growth and fast pruning from two opposite flakes: the tubes rewire many times a second and the tail shimmers as the matrix keeps changing.",
+  "values": {
+    "growthRate": 0.8674,
+    "decayRate": 0.767,
+    "memory": 0.1,
+    "gamma": 1.2,
+    "decayTime": 0.4327,
+    "damping": 0.3,
+    "roomSize": 0.8,
+    "mix": 0.4,
+    "food1": 1,
+    "food2": 0,
+    "food3": 0,
+    "food4": 0,
+    "food5": 1,
+    "food6": 0,
+    "food7": 0,
+    "food8": 0
+  }
+}

@@ -1,0 +1,14 @@
+// uses: dsp/Params.cmajor dsp/PhysarumFdn.cmajor
+// The Physarum FDN at its defaults, on the test bursts.
+
+graph Test [[ main ]]
+{
+    output stream float<2> out;
+    node source = test::Source;
+    node fdn = plugin::PhysarumFdn;
+    connection
+    {
+        source -> fdn.in;
+        fdn.out -> out;
+    }
+}

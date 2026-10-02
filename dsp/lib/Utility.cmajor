@@ -1,0 +1,139 @@
+//  Utility: swap, phase inversion, mid/side width, bass mono below a
+//  Linkwitz-Riley crossover, balance and gain, in that order; every gain glides per sample.
+
+namespace lib
+{
+    struct Utility
+    {
+        Crossover xo;
+        float swap, invL, invR, width, bass, panL, panR, gain;     // smoothed
+        float hz;                                                   // the crossover, ln (Hz), per block
+        bool fresh, idle;
+        int silentCount;
+    }
+
+    struct UtilityParams
+    {
+        /// Output gain, dB: -48 .. 24.
+        float gain;
+
+        /// Balance, -1 (left) .. 1 (right): the far side fades out, the near one stays at 1.
+        float pan;
+
+        /// Stereo width, 0 (mono) .. 2 (the side doubled); 1 leaves it as it is.
+        float width;
+
+        /// Flip the left and the right side's polarity.
+        bool invertLeft, invertRight;
+
+        /// Swap left and right.
+        bool swap;
+
+        /// Bass mono: everything below this frequency (Hz, 20 .. 1000) is summed to mono.
+        /// 0 (or less) is off.
+        float bassMono;
+    }
+
+    /// Unity gain, centred, width 1, nothing inverted or swapped, bass mono off.
+    UtilityParams utilityDefaults()
+    {
+        UtilityParams p;
+        p.gain = 0.0f;
+        p.pan = 0.0f;
+        p.width = 1.0f;
+        p.invertLeft = false;
+        p.invertRight = false;
+        p.swap = false;
+        p.bassMono = 0.0f;
+        return p;
+    }
+
+    void reset (Utility& this)
+    {
+        this.xo.reset();
+        this.fresh = true;
+        this.idle = true;
+        this.silentCount = 0;
+    }
+
+    bool process<Buf> (Utility& this, Buf& buf, const UtilityParams& p, float64 sampleRate)
+    {
+        let active = anyAbove (buf, 1e-8f);
+
+        if (! active && this.idle)
+            return false;
+
+        let sr = sampleRate;
+        let tSwap = p.swap ? 1.0f : 0.0f;
+        let tInvL = p.invertLeft ? -1.0f : 1.0f;
+        let tInvR = p.invertRight ? -1.0f : 1.0f;
+        let tWidth = clamp (p.width, 0.0f, 2.0f);
+        let bassOnNow = p.bassMono > 0;
+        let tBass = bassOnNow ? 1.0f : 0.0f;
+        let pan = clamp (p.pan, -1.0f, 1.0f);
+        let tPanL = min (1.0f, 1.0f - pan);
+        let tPanR = min (1.0f, 1.0f + pan);
+        let tGain = dbToGain (clamp (p.gain, -48.0f, 24.0f));
+        let k = smoothing (sr, 20.0, 1);
+        let tHz = bassOnNow ? float (log (float64 (max (p.bassMono, 20.0f)))) : this.hz;
+
+        if (this.fresh)
+        {
+            this.fresh = false;
+            this.swap = tSwap; this.invL = tInvL; this.invR = tInvR; this.width = tWidth;
+            this.bass = tBass; this.panL = tPanL; this.panR = tPanR; this.gain = tGain;
+            this.hz = bassOnNow ? tHz : float (log (100.0));
+        }
+
+        this.hz += (tHz - this.hz) * smoothing (sr, 20.0, buf.size);
+
+        // the crossover runs while bass mono is on or fading
+        let bassOn = tBass > 0 || this.bass > 1e-5f;
+        let c = svfCoefsAt (exp (float64 (this.hz)), sr, butterworthK);
+
+        for (wrap<buf.size> i)
+        {
+            this.swap += (tSwap - this.swap) * k;
+            this.invL += (tInvL - this.invL) * k;
+            this.invR += (tInvR - this.invR) * k;
+            this.width += (tWidth - this.width) * k;
+            this.bass += (tBass - this.bass) * k;
+            this.panL += (tPanL - this.panL) * k;
+            this.panR += (tPanR - this.panR) * k;
+            this.gain += (tGain - this.gain) * k;
+
+            let x0 = buf[i];
+            var x = x0 + (float<2> (x0[1], x0[0]) - x0) * this.swap;
+            x *= float<2> (this.invL, this.invR);
+
+            let mid = 0.5f * (x[0] + x[1]);
+            let side = 0.5f * (x[0] - x[1]) * this.width;
+            x = float<2> (mid + side, mid - side);
+
+            if (bassOn)
+            {
+                float<2> low, high;
+                this.xo.split (c, x, low, high);
+                let m = 0.5f * (low[0] + low[1]);
+                x += (float<2> (m, m) + high - x) * this.bass;
+            }
+
+            buf[i] = x * float<2> (this.panL, this.panR) * this.gain;
+        }
+
+        // fully faded out: forget the crossover's state so that it starts clean next time
+        if (tBass == 0 && this.bass < 1e-5f)
+        {
+            this.bass = 0;
+            this.xo.reset();
+        }
+
+        if (stillSounding (this.idle, this.silentCount, buf.size, active || anyAbove (buf, 1e-8f)))
+            return true;
+
+        if (float (this.silentCount) > float (sr) * 0.1f)
+            this.idle = true;
+
+        return false;
+    }
+}

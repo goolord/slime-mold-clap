@@ -1,0 +1,29 @@
+{
+  "name": "Cathedral Plasmodium",
+  "author": "Physarum",
+  "category": "space",
+  "tags": [
+    "huge",
+    "long",
+    "diffuse"
+  ],
+  "description": "The biggest room and a very long decay, fed from four points round the ring: a slowly breathing cathedral.",
+  "values": {
+    "growthRate": 0.4924,
+    "decayRate": 0.392,
+    "memory": 0.35,
+    "gamma": 1.5,
+    "decayTime": 0.8891,
+    "damping": 0.6,
+    "roomSize": 2,
+    "mix": 0.5,
+    "food1": 1,
+    "food2": 0,
+    "food3": 1,
+    "food4": 0,
+    "food5": 1,
+    "food6": 0,
+    "food7": 1,
+    "food8": 0
+  }
+}

@@ -1,0 +1,76 @@
+// uses: dsp/Params.cmajor dsp/PhysarumFdn.cmajor
+// The stability guarantee under abuse: the most plastic tubes (fastest growth, slowest pruning,
+// no lattice memory, the sharpest growth curve), the longest decay, damping slamming between none
+// and full, fully wet,
+// room size jumping between its extremes ten times a second, and the bursts 50 times too loud.
+// The output is scaled back down by 50: bounded means it stays near the input's level.
+
+processor Abuse
+{
+    input stream float<2> in;
+    output stream float<2> out;
+    output event params::Values paramsOut;
+
+    void main()
+    {
+        var v = params::defaults();
+        v.growthRate = 20.0f;
+        v.decayRate = 0.01f;
+        v.memory = 0.0f;
+        v.gamma = 2.0f;
+        v.decayTime = 30.0f;
+        v.damping = 0.0f;
+        v.mix = 1.0f;
+        v.food1 = true;
+        v.food4 = false;
+        v.food6 = false;
+        int n = 0;
+        let jump = int (processor.frequency * 0.1);
+
+        loop
+        {
+            if (n % jump == 0)
+            {
+                v.roomSize = ((n / jump) % 2) == 0 ? 2.0f : 0.25f;
+                v.damping = ((n / jump) % 3) == 0 ? 1.0f : 0.0f;
+                paramsOut <- v;
+            }
+
+            out <- in * 50.0f;
+            ++n;
+            advance();
+        }
+    }
+}
+
+processor Attenuate
+{
+    input stream float<2> in;
+    output stream float<2> out;
+
+    void main()
+    {
+        loop
+        {
+            out <- in * (1.0f / 50.0f);
+            advance();
+        }
+    }
+}
+
+graph Test [[ main ]]
+{
+    output stream float<2> out;
+    node source = test::Source;
+    node abuse = Abuse;
+    node fdn = plugin::PhysarumFdn;
+    node down = Attenuate;
+    connection
+    {
+        source -> abuse.in;
+        abuse.out -> fdn.in;
+        abuse.paramsOut -> fdn.paramsIn;
+        fdn.out -> down.in;
+        down.out -> out;
+    }
+}

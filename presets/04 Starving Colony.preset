@@ -1,0 +1,29 @@
+{
+  "name": "Starving Colony",
+  "author": "Physarum",
+  "category": "texture",
+  "tags": [
+    "sparse",
+    "metallic",
+    "short"
+  ],
+  "description": "One flake, no memory and harsh pruning: only a few tubes survive, so the loop stays sparse and rings like a small metal room.",
+  "values": {
+    "growthRate": 0.767,
+    "decayRate": 0.9261,
+    "memory": 0,
+    "gamma": 2,
+    "decayTime": 0.3345,
+    "damping": 0.2,
+    "roomSize": 0.45,
+    "mix": 0.5,
+    "food1": 0,
+    "food2": 0,
+    "food3": 1,
+    "food4": 0,
+    "food5": 0,
+    "food6": 0,
+    "food7": 0,
+    "food8": 0
+  }
+}

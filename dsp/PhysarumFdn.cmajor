@@ -1,0 +1,763 @@
+//  PhysarumFdn: a feedback delay network whose feedback matrix grows like a slime mould.
+//
+//  Eight delay lines (the nodes) sit on a ring. Every ordered pair of lines (i, j) is joined by a
+//  tube, as in the Tero et al. model of Physarum polycephalum's transport network: a tube has a
+//  conductance D_ij, a length L_ij (the chord between the two nodes on the unit circle), and
+//  carries a flux driven by the difference in "pressure" (short-term level) between its ends:
+//
+//      Q_ij = gain * W_ij / L_ij * (p_i - p_j)          (positive: flowing from i to j)
+//      dD_ij/dt = alpha * f(Q_ij+) - mu * D_ij,         f(q) = q^gamma / (1 + q^gamma)
+//      W_ij = m + (1 - m) * D_ij                        (m: harmonic memory, a lattice floor)
+//
+//  Tubes that carry flux thicken towards alpha f / mu; tubes that don't atrophy at rate mu. Tubes
+//  are directed (i -> j grows only while energy flows that way), so the network rewires itself
+//  asymmetrically, towards wherever the sound is not.
+//
+//  Every K samples the conductances become a feedback matrix: tube c -> r sets the magnitude of
+//  A[r][c] (sqrt (W / L), amplitude being the square root of energy), a Hadamard pattern its sign,
+//  and the matrix is then projected onto the orthogonal matrices (its polar factor, by
+//  Newton-Schulz iteration), so that the loop is lossless however the tubes have grown. The
+//  projection is exact in its bound: every iteration leaves each singular value in [0, 1], so
+//  ||A||_2 <= 1 holds after any number of iterations, not just at convergence. The loss that sets
+//  the decay time is then a gain per line, below a ceiling (fdn::gainCeiling), and an in-loop
+//  one-pole lowpass built so that it can't add energy even while its coefficient moves.
+//  docs/STABILITY.md proves that this bounds the output for any input and any parameters.
+//
+//  Per sample:   taps x = delayed lines,  y = g * lowpass (x),  s = A(t) y + B u,  lines <- s
+//                out = dry * u + wet * C x
+//  A(t) ramps linearly from the previous update's matrix to the new one over the K samples (a
+//  convex combination of two matrices of norm <= 1, so of norm <= 1 itself).
+//
+//  Room size scales the line lengths, kept prime. A change crossfades each line from its old
+//  length to the new with weights chosen so that the read is never louder than the line (see
+//  readTap), rather than sliding the read point, which would repeat samples and add energy.
+//
+//  The view gets, about 30 times a second: the conductances (matrixState, the 8 x 8 W flattened
+//  by rows: W[i * 8 + j] is tube i -> j), the projected matrix (feedbackMatrix, A[r * 8 + c]:
+//  line c into line r), each line's pressure (nodeEnergy) and length (nodeDelayMs), a few numbers
+//  about the matrix (networkStats) and the output level (meterOut).
+
+namespace plugin
+{
+    /// The network's fixed shape and constants.
+    namespace fdn
+    {
+        /// Delay lines: the matrix is size x size.
+        let size = 8;
+        let cells = size * size;
+
+        /// Each line's buffer: a power of two, so that positions wrap.
+        let bufferSize = 16384;
+        let bufferMask = bufferSize - 1;
+
+        /// K: the conductances and the matrix are updated every this many samples, and the matrix
+        /// ramps from the old to the new over as many.
+        let updateInterval = 64;
+
+        /// Line lengths at room size 1 and 48 kHz: distinct primes (so mutually prime) between
+        /// 800 and 4500, about a fifth apart.
+        let basePrimes = int[size] (887, 1093, 1327, 1601, 1913, 2357, 2903, 3511);
+        let referenceRate = 48000.0;
+
+        /// No line is longer than this (the room shrinks to fit at high sample rates).
+        let maxLength = bufferSize - 2;
+
+        /// No line's loop gain is above this. The projection's float rounding can leave a singular
+        /// value a few parts in 10^7 above 1; this margin keeps the loop strictly contracting.
+        let gainCeiling = 0.9995f;
+
+        /// A line's pressure is its level above this floor (dB), as a fraction of it: 0..1.
+        let pressureFloorDb = -72.0;
+
+        /// How hard a pressure difference drives flux down a tube.
+        let fluxGain = 4.0;
+
+        /// Conductances stay in [minConductance, 1]: a starved tube can always regrow.
+        let minConductance = 0.002;
+
+        /// The conductance of each line's tube to itself (the matrix diagonal).
+        let selfConductance = 0.5;
+
+        /// The level follower's time constant (ms): how long a pressure takes to build or drain.
+        let pressureMs = 60.0;
+
+        /// Newton-Schulz: at most this many iterations, stopping once ||A^T A - I||_F is below
+        /// the tolerance.
+        let maxIterations = 24;
+        let tolerance = 1.0e-7;
+
+        /// A change of length crossfades over at least this many samples, and four times the change.
+        let minFadeLength = 2048;
+
+        struct Line
+        {
+            float[bufferSize] samples;
+        }
+
+        /// The flat index of row r, column c.
+        wrap<cells> cell (wrap<size> r, wrap<size> c)    { return wrap<cells> (int (r) * size + int (c)); }
+
+        /// The sign of the Sylvester-Hadamard matrix at (i, j): (-1) to the number of bits i and j
+        /// share. With every tube equally open, the projected matrix is the Hadamard FDN's.
+        float64 hadamardSign (int i, int j)
+        {
+            var bits = i & j;
+            var odd = false;
+
+            while (bits != 0)
+            {
+                if ((bits & 1) != 0)
+                    odd = ! odd;
+
+                bits = bits >> 1;
+            }
+
+            return odd ? -1.0 : 1.0;
+        }
+
+        /// The tube between nodes i and j: their chord on the unit circle (1 on the diagonal).
+        float64 tubeLength (int i, int j)
+        {
+            if (i == j)
+                return 1.0;
+
+            return 2.0 * sin (pi * float64 (abs (i - j)) / float64 (size));
+        }
+
+        /// The shortest tube, between neighbours.
+        let shortestTube = 2.0 * sin (pi / float64 (size));
+
+        /// A node's place left to right (-1 .. 1): nodes go clockwise from the top.
+        float panPosition (int i)       { return float (sin (twoPi * float64 (i) / float64 (size))); }
+
+        /// The equal-power gains of a node's place, left and right.
+        float<2> panGains (int i)
+        {
+            let x = panPosition (i);
+            return float<2> (sqrt (0.5f * (1.0f - x)), sqrt (0.5f * (1.0f + x)));
+        }
+
+        /// The growth function f(q) = q^gamma / (1 + q^gamma), for q >= 0: tubes saturate.
+        float64 growth (float64 q, float64 gamma)
+        {
+            if (q <= 0.0)
+                return 0.0;
+
+            let qg = pow (q, gamma);
+            return qg / (1.0 + qg);
+        }
+
+        bool isPrime (int n)
+        {
+            if (n < 2)
+                return false;
+
+            if (n % 2 == 0)
+                return n == 2;
+
+            for (var d = 3; d * d <= n; d += 2)
+                if (n % d == 0)
+                    return false;
+
+            return true;
+        }
+
+        int primeAtLeast (int n)
+        {
+            var k = max (n, 2);
+
+            while (! isPrime (k))
+                ++k;
+
+            return k;
+        }
+
+        int primeAtMost (int n)
+        {
+            var k = n;
+
+            while (k > 2 && ! isPrime (k))
+                --k;
+
+            return k;
+        }
+    }
+
+    processor PhysarumFdn
+    {
+        input event params::Values paramsIn;
+        input stream float<2> in;
+
+        output stream float<2> out;
+
+        // for the view, about 30 times a second
+        output event float<2> meterOut;
+        output event float[fdn::cells] matrixState;
+        output event float[fdn::cells] feedbackMatrix;
+        output event float[fdn::size] nodeEnergy;
+        output event float[fdn::size] nodeDelayMs;
+        // the largest singular value of A (estimated), ||A^T A - I||_F, the mean conductance
+        // and the Newton-Schulz iterations the last update took
+        output event float[4] networkStats;
+
+        params::Values p;
+
+        event paramsIn (params::Values v)
+        {
+            p = v;
+            updateRouting();
+            updateTargetLengths();
+        }
+
+        //==============================================================================
+        // state
+
+        fdn::Line[fdn::size] lines;
+        wrap<fdn::bufferSize> writePos;
+
+        // the length read; during a crossfade, the one faded to, and where the fade is
+        int[fdn::size] length, nextLength, targetLength, fadePos, fadeLag, fadeLength;
+        bool[fdn::size] fading;
+
+        // per line: the damping filter, the level follower (mean square), the loop gain
+        float[fdn::size] lowpass, energy, loopGain, loopGainTarget;
+        float dampCoef, dampTarget, dampPole, dampCross, energyCoef;
+        float wetGain, wetGainTarget, dryLevel, dryTarget, wetLevel, wetTarget;
+
+        // where the input goes in (B) and the taps come out (C), left and right
+        float<2>[fdn::size] inject, tapOut;
+
+        // the tubes: D[i * size + j] for i -> j, the Hadamard signs and the tube lengths
+        float64[fdn::cells] conductance, signs, tubeLengths;
+        float64[fdn::size] pressure;
+
+        // the projection's working matrices, and the matrices the audio ramps between
+        float64[fdn::cells] work, gram, temp;
+        float[fdn::cells] mixFrom, mixTo;
+
+        // reports for the view
+        float64[fdn::size] powerVector;
+        float unitarityError;
+        int iterationsUsed, uiBlocks;
+        float<2> peak;
+
+        //==============================================================================
+        void init()
+        {
+            p = params::defaults();
+
+            for (wrap<fdn::size> i)
+            {
+                for (wrap<fdn::size> j)
+                {
+                    let k = fdn::cell (i, j);
+                    signs[k] = fdn::hadamardSign (int (i), int (j));
+                    tubeLengths[k] = fdn::tubeLength (int (i), int (j));
+                    conductance[k] = 0.5;
+                }
+
+                powerVector[i] = 1.0 / sqrt (float64 (fdn::size));
+            }
+
+            energyCoef = lib::smoothing (processor.frequency, fdn::pressureMs, 1);
+
+            updateRouting();
+            updateTargetLengths();
+
+            for (wrap<fdn::size> i)
+            {
+                length[i] = targetLength[i];
+                nextLength[i] = targetLength[i];
+            }
+
+            // the loop starts from the projection of the starting tubes, with its gains in place
+            updateCoefficients (true);
+            buildMatrix (clamp (float64 (p.memory), 0.0, 1.0));
+            project();
+
+            for (wrap<fdn::cells> k)
+            {
+                mixTo[k] = float (work[k]);
+                mixFrom[k] = mixTo[k];
+            }
+        }
+
+        //==============================================================================
+        // routing and lengths
+
+        bool isFed (int i)
+        {
+            if (i == 0) return p.food1;
+            if (i == 1) return p.food2;
+            if (i == 2) return p.food3;
+            if (i == 3) return p.food4;
+            if (i == 4) return p.food5;
+            if (i == 5) return p.food6;
+            if (i == 6) return p.food7;
+            return p.food8;
+        }
+
+        /// The input goes into the fed lines (all of them when none is), panned by where each
+        /// node sits on the ring; the taps come out the same way, alternating in sign so that the
+        /// lines don't all pile up in the middle.
+        void updateRouting()
+        {
+            var count = 0;
+
+            for (wrap<fdn::size> i)
+                if (isFed (int (i)))
+                    ++count;
+
+            let all = count == 0;
+            let norm = 1.0f / sqrt (float (all ? fdn::size : count));
+
+            for (wrap<fdn::size> i)
+            {
+                let pan = fdn::panGains (int (i));
+                inject[i] = (all || isFed (int (i))) ? pan * norm : float<2> (0.0f, 0.0f);
+                // the gains' squares sum to size / 2 per side: 0.5 makes it unity
+                tapOut[i] = pan * ((int (i) % 2) == 0 ? 0.5f : -0.5f);
+            }
+        }
+
+        /// Each line's length for the room size: its base prime scaled, then the next prime up,
+        /// each longer than the one before (so all distinct, so mutually prime).
+        void updateTargetLengths()
+        {
+            let rateScale = processor.frequency / fdn::referenceRate;
+            let longest = float64 (fdn::basePrimes[fdn::size - 1]);
+            let scale = min (float64 (clamp (p.roomSize, 0.25f, 2.0f)) * rateScale, float64 (fdn::maxLength - 64) / longest);
+            var previous = 1;
+
+            for (wrap<fdn::size> i)
+            {
+                var n = max (int (float64 (fdn::basePrimes[i]) * scale + 0.5), previous + 1);
+                n = fdn::primeAtLeast (n);
+
+                if (n > fdn::maxLength)
+                    n = fdn::primeAtMost (fdn::maxLength);
+
+                targetLength[i] = n;
+                previous = n;
+            }
+        }
+
+        /// Starts crossfading lines whose length should change (one fade at a time per line: a
+        /// line mid-fade picks up the newest length when it finishes).
+        void startFades()
+        {
+            for (wrap<fdn::size> i)
+            {
+                if (! fading[i] && targetLength[i] != length[i])
+                {
+                    let change = targetLength[i] - length[i];
+                    nextLength[i] = targetLength[i];
+                    fadeLag[i] = max (change, 0);
+                    fadeLength[i] = max (fdn::minFadeLength, 4 * abs (change));
+                    fadePos[i] = 0;
+                    fading[i] = true;
+                }
+            }
+        }
+
+        /// A line's output. While its length changes from a to b, the read is
+        ///     alpha(n) x[n - a] + beta(n) x[n - b],  alpha ramping 1 -> 0 over T samples,
+        ///     beta(n) = 1 - alpha(n - lag),  lag = max (b - a, 0).
+        /// Each read's weights sum to at most 1, and each stored sample's weights over the reads
+        /// that touch it (alpha at n = k + a, beta at n = k + b) sum to exactly 1, so the read is
+        /// never louder than the line, in energy (Schur's test): no sample is read twice over.
+        float readTap (wrap<fdn::size> i)
+        {
+            let a = lines[i].samples.at ((int (writePos) - length[i]) & fdn::bufferMask);
+
+            if (! fading[i])
+                return a;
+
+            let b = lines[i].samples.at ((int (writePos) - nextLength[i]) & fdn::bufferMask);
+            let t = float (fadeLength[i]);
+            let alpha = clamp (1.0f - float (fadePos[i]) / t, 0.0f, 1.0f);
+            let beta = clamp (float (fadePos[i] - fadeLag[i]) / t, 0.0f, 1.0f);
+
+            fadePos[i] = fadePos[i] + 1;
+
+            if (fadePos[i] >= fadeLag[i] + fadeLength[i])
+            {
+                length[i] = nextLength[i];
+                fading[i] = false;
+            }
+
+            return alpha * a + beta * b;
+        }
+
+        //==============================================================================
+        // coefficients, once per K samples
+
+        void updateCoefficients (bool snap)
+        {
+            let sr = processor.frequency;
+
+            // damping: a one-pole lowpass in each loop, from none down to 500 Hz, a / (1 - p z^-1)
+            // with p = 1 - a. It runs as  [z'; y] = [p, c; c, a] [z; x],  c = sqrt (a p): that
+            // matrix is a projection (eigenvalues 1 and 0), so z'^2 + y^2 <= z^2 + x^2 at every
+            // sample, and the filter can't add energy even while its coefficient glides (the
+            // usual y += a (x - y) can, when a falls quickly: it holds a loud sample longer).
+            let d = clamp (p.damping, 0.0f, 1.0f);
+            dampTarget = d <= 0.0f ? 1.0f : lib::onePoleCoef (500.0 * pow (40.0, float64 (1.0f - d)), sr);
+
+            // the loop gain that takes each line down 60 dB in the decay time, below the ceiling
+            let t60 = max (float64 (p.decayTime), 0.05);
+            var sumSquares = 0.0f;
+
+            for (wrap<fdn::size> i)
+            {
+                let n = fading[i] ? nextLength[i] : length[i];
+                let g = float (pow (10.0, -3.0 * float64 (n) / (t60 * sr)));
+                loopGainTarget[i] = min (g, fdn::gainCeiling);
+                sumSquares += loopGainTarget[i] * loopGainTarget[i];
+            }
+
+            // a long decay piles up more energy: lean the wet level against it, part way
+            wetGainTarget = sqrt (sqrt (max (1.0f - sumSquares / float (fdn::size), 0.0f)));
+
+            let m = clamp (p.mix, 0.0f, 1.0f);
+            dryTarget = cos (m * float (pi) * 0.5f);
+            wetTarget = sin (m * float (pi) * 0.5f);
+
+            let k = snap ? 1.0f : lib::smoothing (sr, 30.0, fdn::updateInterval);
+
+            dampCoef += (dampTarget - dampCoef) * k;
+            dampPole = 1.0f - dampCoef;
+            dampCross = sqrt (dampCoef * dampPole);
+            wetGain += (wetGainTarget - wetGain) * k;
+            dryLevel += (dryTarget - dryLevel) * k;
+            wetLevel += (wetTarget - wetLevel) * k;
+
+            // (a blend of gains below the ceiling stays below it)
+            for (wrap<fdn::size> i)
+                loopGain[i] += (loopGainTarget[i] - loopGain[i]) * k;
+        }
+
+        //==============================================================================
+        // the slime mould
+
+        /// One step of the tube dynamics, dt = K / sr long. Integrated exactly for a flux held over
+        /// the step: D relaxes towards alpha f / mu with factor e^(-mu dt), which can't overshoot
+        /// or go unstable whatever the rates. Then the new matrix.
+        void adaptNetwork()
+        {
+            let dt = float64 (fdn::updateInterval) / processor.frequency;
+
+            for (wrap<fdn::size> i)
+            {
+                let db = 10.0 * log10 (float64 (energy[i]) + 1.0e-12);
+                pressure[i] = clamp ((db - fdn::pressureFloorDb) / -fdn::pressureFloorDb, 0.0, 1.0);
+            }
+
+            let alpha = max (float64 (p.growthRate), 0.0);
+            let mu = max (float64 (p.decayRate), 1.0e-4);
+            let gamma = clamp (float64 (p.gamma), 1.0, 2.0);
+            let memory = clamp (float64 (p.memory), 0.0, 1.0);
+            let keep = exp (-mu * dt);
+
+            for (wrap<fdn::size> i)
+            {
+                for (wrap<fdn::size> j)
+                {
+                    if (i != j)
+                    {
+                        let k = fdn::cell (i, j);
+                        let w = memory + (1.0 - memory) * conductance[k];
+                        let q = fdn::fluxGain * w / tubeLengths[k] * (pressure[i] - pressure[j]);
+                        let equilibrium = alpha / mu * fdn::growth (q, gamma);
+                        let d = equilibrium + (conductance[k] - equilibrium) * keep;
+                        conductance[k] = clamp (d, fdn::minConductance, 1.0);
+                    }
+                }
+            }
+
+            buildMatrix (memory);
+            project();
+
+            for (wrap<fdn::cells> k)
+            {
+                mixFrom[k] = mixTo[k];
+                mixTo[k] = float (work[k]);
+            }
+        }
+
+        /// The matrix to project, into work: A[r][c] (line c into line r) from tube c -> r.
+        void buildMatrix (float64 memory)
+        {
+            for (wrap<fdn::size> r)
+            {
+                for (wrap<fdn::size> c)
+                {
+                    let k = fdn::cell (r, c);
+
+                    if (r == c)
+                    {
+                        work[k] = signs[k] * sqrt (fdn::selfConductance);
+                    }
+                    else
+                    {
+                        let w = memory + (1.0 - memory) * conductance[fdn::cell (c, r)];
+                        work[k] = signs[k] * sqrt (w * fdn::shortestTube / tubeLengths[k]);
+                    }
+                }
+            }
+        }
+
+        /// gram = work^T work.
+        void computeGram()
+        {
+            for (wrap<fdn::size> a)
+            {
+                for (wrap<fdn::size> b)
+                {
+                    var s = 0.0;
+
+                    for (wrap<fdn::size> r)
+                        s += work[fdn::cell (r, a)] * work[fdn::cell (r, b)];
+
+                    gram[fdn::cell (a, b)] = s;
+                }
+            }
+        }
+
+        /// Replaces work with its polar factor: the orthogonal matrix nearest to it, which keeps
+        /// the tubes' pattern (strong couplings stay strong) but loses no energy.
+        ///
+        /// First it is scaled so that its spectral norm is at most 1, by a bound that is never
+        /// below that norm: the smaller of the Frobenius norm and sqrt (||M||_1 ||M||_inf). Then
+        /// Newton-Schulz: X <- X (3I - X^T X) / 2 maps each singular value s to s (3 - s^2) / 2,
+        /// which takes [0, 1] into [0, 1] and draws it towards 1. So ||X||_2 <= 1 after every
+        /// iteration, converged or not; a singular value that hasn't got to 1 yet only damps.
+        void project()
+        {
+            var frobenius = 0.0;
+            float64[fdn::size] rowSums, columnSums;
+
+            for (wrap<fdn::size> r)
+            {
+                for (wrap<fdn::size> c)
+                {
+                    let x = abs (work[fdn::cell (r, c)]);
+                    frobenius += x * x;
+                    rowSums[r] += x;
+                    columnSums[c] += x;
+                }
+            }
+
+            var maxRow = 0.0;
+            var maxColumn = 0.0;
+
+            for (wrap<fdn::size> i)
+            {
+                maxRow = max (maxRow, rowSums[i]);
+                maxColumn = max (maxColumn, columnSums[i]);
+            }
+
+            let bound = min (sqrt (frobenius), sqrt (maxRow * maxColumn));
+
+            if (bound < 1.0e-12)
+            {
+                for (wrap<fdn::size> r)
+                    for (wrap<fdn::size> c)
+                        work[fdn::cell (r, c)] = r == c ? 1.0 : 0.0;
+
+                iterationsUsed = 0;
+                unitarityError = 0.0f;
+                return;
+            }
+
+            for (wrap<fdn::cells> k)
+                work[k] /= bound;
+
+            iterationsUsed = 0;
+
+            loop (fdn::maxIterations)
+            {
+                computeGram();
+
+                var error = 0.0;
+
+                for (wrap<fdn::size> a)
+                {
+                    for (wrap<fdn::size> b)
+                    {
+                        let e = gram[fdn::cell (a, b)] - (a == b ? 1.0 : 0.0);
+                        error += e * e;
+                    }
+                }
+
+                unitarityError = float (sqrt (error));
+
+                if (error < fdn::tolerance * fdn::tolerance)
+                    break;
+
+                for (wrap<fdn::size> r)
+                {
+                    for (wrap<fdn::size> c)
+                    {
+                        var s = 0.0;
+
+                        for (wrap<fdn::size> m)
+                            s += work[fdn::cell (r, m)] * gram[fdn::cell (m, c)];
+
+                        temp[fdn::cell (r, c)] = 1.5 * work[fdn::cell (r, c)] - 0.5 * s;
+                    }
+                }
+
+                work = temp;
+                ++iterationsUsed;
+            }
+        }
+
+        //==============================================================================
+        // the view
+
+        /// The largest singular value of the matrix in use: a few steps of power iteration on
+        /// A^T A, carried on from the last time.
+        float largestSingularValue()
+        {
+            for (wrap<fdn::size> r)
+                for (wrap<fdn::size> c)
+                    work[fdn::cell (r, c)] = float64 (mixTo[fdn::cell (r, c)]);
+
+            computeGram();
+            var lambda = 0.0;
+
+            loop (4)
+            {
+                float64[fdn::size] next;
+                var norm = 0.0;
+
+                for (wrap<fdn::size> a)
+                {
+                    var s = 0.0;
+
+                    for (wrap<fdn::size> b)
+                        s += gram[fdn::cell (a, b)] * powerVector[b];
+
+                    next[a] = s;
+                    norm += s * s;
+                }
+
+                lambda = sqrt (norm);
+
+                if (lambda < 1.0e-12)
+                    return 0.0f;
+
+                for (wrap<fdn::size> a)
+                    powerVector[a] = next[a] / lambda;
+            }
+
+            return float (sqrt (lambda));
+        }
+
+        void sendState()
+        {
+            float[fdn::cells] w, a;
+            float[fdn::size] pressures, delays;
+            let memory = clamp (float64 (p.memory), 0.0, 1.0);
+            var total = 0.0;
+
+            for (wrap<fdn::cells> k)
+            {
+                a[k] = mixTo[k];
+                w[k] = float (memory + (1.0 - memory) * conductance[k]);
+            }
+
+            for (wrap<fdn::size> i)
+            {
+                w[fdn::cell (i, i)] = 0.0f;
+                pressures[i] = float (pressure[i]);
+                delays[i] = float (1000.0 * float64 (fading[i] ? nextLength[i] : length[i]) / processor.frequency);
+            }
+
+            for (wrap<fdn::cells> k)
+                total += float64 (w[k]);
+
+            matrixState <- w;
+            feedbackMatrix <- a;
+            nodeEnergy <- pressures;
+            nodeDelayMs <- delays;
+
+            float[4] stats;
+            stats[0] = largestSingularValue();
+            stats[1] = unitarityError;
+            stats[2] = float (total / float64 (fdn::cells - fdn::size));
+            stats[3] = float (iterationsUsed);
+            networkStats <- stats;
+
+            meterOut <- peak;
+            peak = float<2> (0.0f, 0.0f);
+        }
+
+        //==============================================================================
+        // audio
+
+        /// One frame, at t (0..1) through the matrix's ramp.
+        void processFrame (float t)
+        {
+            let u = in;
+            float[fdn::size] y;
+            var wet = float<2> (0.0f, 0.0f);
+
+            for (wrap<fdn::size> i)
+            {
+                let x = readTap (i);
+                energy[i] += energyCoef * (x * x - energy[i]);
+                let damped = dampCross * lowpass[i] + dampCoef * x;
+                lowpass[i] = dampPole * lowpass[i] + dampCross * x;
+                y[i] = damped * loopGain[i];
+                wet += tapOut[i] * x;
+            }
+
+            for (wrap<fdn::size> r)
+            {
+                var from = 0.0f;
+                var to = 0.0f;
+
+                for (wrap<fdn::size> c)
+                {
+                    from += mixFrom[fdn::cell (r, c)] * y[c];
+                    to += mixTo[fdn::cell (r, c)] * y[c];
+                }
+
+                lines[r].samples[writePos] = from + t * (to - from) + inject[r][0] * u[0] + inject[r][1] * u[1];
+            }
+
+            ++writePos;
+
+            let o = dryLevel * u + (wetLevel * wetGain) * wet;
+            peak = max (peak, abs (o));
+            out <- o;
+        }
+
+        void main()
+        {
+            // blocks of K samples between sends, about 30 a second
+            let uiInterval = max (1, int (processor.frequency / (30.0 * float64 (fdn::updateInterval))));
+
+            loop
+            {
+                startFades();
+                updateCoefficients (false);
+                adaptNetwork();
+
+                for (wrap<fdn::updateInterval> n)
+                {
+                    processFrame (float (int (n) + 1) / float (fdn::updateInterval));
+                    advance();
+                }
+
+                if (++uiBlocks >= uiInterval)
+                {
+                    uiBlocks = 0;
+                    sendState();
+                }
+            }
+        }
+    }
+}

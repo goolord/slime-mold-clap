@@ -1,0 +1,34 @@
+//  The plugin's top level: the parameter endpoints (dsp/Params.cmajor, generated from
+//  ui/plugin/Params.res) and the audio go into the Physarum FDN (dsp/PhysarumFdn.cmajor); the
+//  network's state goes out to the view as events, about 30 times a second.
+
+graph Plugin  [[ main ]]
+{
+    input params.*;
+    input stream float<2> in                    [[ name: "Audio In" ]];
+
+    output stream float<2> out                  [[ name: "Audio Out" ]];
+    // for the view: peak levels, and the network (see PhysarumFdn)
+    output event float<2> meterOut;
+    output event float[64] matrixState;
+    output event float[64] feedbackMatrix;
+    output event float[8] nodeEnergy;
+    output event float[8] nodeDelayMs;
+    output event float[4] networkStats;
+
+    node params    = Params;
+    node fdn       = plugin::PhysarumFdn;
+
+    connection
+    {
+        params.out            -> fdn.paramsIn;
+        in                    -> fdn.in;
+        fdn.out               -> out;
+        fdn.meterOut          -> meterOut;
+        fdn.matrixState       -> matrixState;
+        fdn.feedbackMatrix    -> feedbackMatrix;
+        fdn.nodeEnergy        -> nodeEnergy;
+        fdn.nodeDelayMs       -> nodeDelayMs;
+        fdn.networkStats      -> networkStats;
+    }
+}

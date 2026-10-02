@@ -1,0 +1,42 @@
+// The shared pieces: a crossover's bands summed back, through a block processor.
+
+processor CommonTest
+{
+    input stream float<2> in;
+    output stream float<2> out;
+
+    lib::Crossover xo;
+    float<2>[test::blockSize] buf;
+
+    void main()
+    {
+        xo.reset();
+        let c = lib::svfCoefsAt (800.0, processor.frequency, lib::butterworthK);
+
+        loop
+        {
+            // out goes the block processed last time, in comes the next
+            for (wrap<test::blockSize> i)
+            {
+                out <- buf[i];
+                buf[i] = in;
+                advance();
+            }
+
+            for (wrap<test::blockSize> i)
+            {
+                float<2> lo, hi;
+                xo.split (c, buf[i], lo, hi);
+                buf[i] = lib::softClip (lo + hi);
+            }
+        }
+    }
+}
+
+graph Test [[ main ]]
+{
+    output stream float<2> out;
+    node source = test::Source;
+    node fx = CommonTest;
+    connection source -> fx -> out;
+}

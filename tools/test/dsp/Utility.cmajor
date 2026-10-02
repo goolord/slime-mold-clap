@@ -1,0 +1,51 @@
+// The utility: widened, panned, a side inverted, then swapped halfway, with bass mono whose
+// crossover sweeps and which switches off and on again (the fade and the crossover's restart).
+
+processor UtilityTest
+{
+    input stream float<2> in;
+    output stream float<2> out;
+
+    lib::Utility ut;
+    lib::UtilityParams p;
+    float<2>[test::blockSize] buf;
+
+    void main()
+    {
+        ut.reset();
+        p = lib::utilityDefaults();
+        p.gain = -3.0f;
+        p.width = 1.6f;
+        p.invertRight = true;
+        int block = 0;
+
+        loop
+        {
+            // out goes the block processed last time, in comes the next
+            for (wrap<test::blockSize> i)
+            {
+                out <- buf[i];
+                buf[i] = in;
+                advance();
+            }
+
+            let t = float (block * test::blockSize) / float (processor.frequency);
+            p.pan = 0.8f * sin (t * lib::piF);
+            p.swap = t > 1.5f;
+
+            // bass mono sweeping 40 .. 600 Hz, off between 1 s and 2 s
+            p.bassMono = (t > 1.0f && t < 2.0f) ? 0.0f : lib::expKnob (40.0f, 600.0f, 0.5f + 0.5f * sin (t * 3.0f));
+            ++block;
+
+            ut.process (buf, p, processor.frequency);
+        }
+    }
+}
+
+graph Test [[ main ]]
+{
+    output stream float<2> out;
+    node source = test::Source;
+    node fx = UtilityTest;
+    connection source -> fx -> out;
+}

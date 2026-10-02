@@ -1,0 +1,28 @@
+{
+    "CmajorVersion":    1,
+    "ID":               "dev.slimemold.physarum",
+    "version":          "0.1",
+    "name":             "Physarum",
+    "description":      "A feedback delay network reverb whose matrix grows like a slime mould",
+    "category":         "effect",
+    "manufacturer":     "Physarum",
+    "isInstrument":     false,
+
+    "plugin":
+    {
+        "manufacturerCode":  "Phys",
+        "pluginCode":        "Phys"
+    },
+
+    "source":           [ "dsp/Params.cmajor", "dsp/PhysarumFdn.cmajor", "dsp/Plugin.cmajor", "dsp/lib/Common.cmajor", "dsp/lib/Utility.cmajor" ],
+    "worker":           "bundle/worker.js",
+    "resources":        [ "bundle/factory-presets.json" ],
+
+    "view":
+    {
+        "src":       "bundle/view.js",
+        "width":     1000,
+        "height":    560,
+        "resizable": true
+    }
+}

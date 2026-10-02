@@ -1,0 +1,29 @@
+{
+  "name": "Ancient Network",
+  "author": "Physarum",
+  "category": "space",
+  "tags": [
+    "slow",
+    "dense",
+    "dark"
+  ],
+  "description": "An old colony fed everywhere: slow to change, a strong lattice memory, long and warm.",
+  "values": {
+    "growthRate": 0.233,
+    "decayRate": 0.159,
+    "memory": 0.7,
+    "gamma": 1.8,
+    "decayTime": 0.7386,
+    "damping": 0.5,
+    "roomSize": 1.6,
+    "mix": 0.45,
+    "food1": 1,
+    "food2": 1,
+    "food3": 1,
+    "food4": 1,
+    "food5": 1,
+    "food6": 1,
+    "food7": 1,
+    "food8": 1
+  }
+}

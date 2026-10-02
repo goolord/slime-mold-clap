@@ -1,0 +1,257 @@
+//  The pieces the library shares: Simper's state-variable filter and a Linkwitz-Riley
+//  crossover, 4-point Hermite interpolation, one-pole and smoothing coefficients, soft clipping,
+//  noise, and tail bookkeeping.
+//
+//  Conventions of the library (dsp/lib/*.cmajor), so that its pieces fit together:
+//
+//   - Everything is in namespace lib. Audio is stereo, float<2> frames.
+//   - An effect is a struct holding its state, plus a struct of parameters in plain units
+//     (Hz, ms, dB, 0..1 amounts), each field documented with its range. `xxxDefaults()`
+//     returns the parameters an effect starts from.
+//   - `reset (this)` clears the state (call it once before the first block, and on panic).
+//   - `process (this, buf, params, sampleRate)` works on a block in place. The block is any
+//     float<2>[N]: the effects are generic over its length, so a processor can run them on
+//     blocks of 32 or 64 frames (with that much latency), or on single frames. Coefficients
+//     are worked out once per block and smoothed inside it, so longer blocks are cheaper.
+//   - process returns whether the block it leaves still holds sound: an effect with a tail
+//     (a delay, a reverb) keeps returning true until its tail has died away, and skips its
+//     work while it is idle and fed silence.
+//   - Nothing here reads a parameter endpoint: how parameters reach an effect is the plugin's
+//     business (dsp/Processor.cmajor fills the structs from the generated params::Values).
+
+namespace lib
+{
+    /// pi as a float.
+    let piF = 3.14159274f;
+
+    //==============================================================================
+    // knobs and levels
+
+    /// A knob that holds its position v (0..1) for a value from lo to hi on a log scale
+    /// (frequencies, rates, times), so that hosts automate it as it turns.
+    float expKnob (float lo, float hi, float v)
+    {
+        return lo * float (pow (float64 (hi / lo), float64 (clamp (v, 0.0f, 1.0f))));
+    }
+
+    /// The position of x on such a knob.
+    float expKnobPosition (float lo, float hi, float x)
+    {
+        return clamp (float (log (float64 (max (x, lo) / lo)) / log (float64 (hi / lo))), 0.0f, 1.0f);
+    }
+
+    float dbToGain (float db)       { return float (pow (10.0, float64 (db) * 0.05)); }
+    float gainToDb (float gain)     { return gain <= 1e-9f ? -180.0f : 20.0f * float (log10 (float64 (gain))); }
+
+    //==============================================================================
+    // smoothing and filter coefficients
+
+    /// One-pole smoothing coefficient for a time constant of ms milliseconds, applied every
+    /// `every` samples: y += k (target - y).
+    float smoothing (float64 sr, float64 ms, int every)
+    {
+        return float (1.0 - exp (-1000.0 * float64 (every) / (ms * sr)));
+    }
+
+    /// The coefficient of a one-pole lowpass at hz (kept below 0.45 sr): y += a (x - y).
+    float onePoleCoef (float64 hz, float64 sr)
+    {
+        return float (1.0 - exp (-2.0 * pi * min (hz, 0.45 * sr) / sr));
+    }
+
+    /// tan (pi hz / sr), with hz kept between 1 Hz and 0.45 sr.
+    float prewarp (float64 hz, float64 sr)
+    {
+        return float (tan (pi * clamp (hz, 1.0, 0.45 * sr) / sr));
+    }
+
+    /// The bilinear one-pole coefficient for an angular frequency w (radians per sample).
+    float bilinearK (float64 w)
+    {
+        return float (0.5 * (sin (w) + cos (w) - 1.0) / cos (w));
+    }
+
+    //==============================================================================
+    // Simper's state-variable filter
+
+    /// A stereo trapezoidal state-variable filter (Simper's).
+    struct Svf
+    {
+        float<2> ic1, ic2;
+    }
+
+    /// An Svf's coefficients: g = tan (pi f / sr), k = 1 / Q.
+    struct SvfCoefs
+    {
+        float g, k, a1, a2, a3;
+    }
+
+    SvfCoefs svfCoefs (float g, float k)
+    {
+        SvfCoefs c;
+        c.g = g;
+        c.k = k;
+        c.a1 = 1.0f / (1.0f + g * (g + k));
+        c.a2 = g * c.a1;
+        c.a3 = g * c.a2;
+        return c;
+    }
+
+    /// Svf coefficients at hz, damping k.
+    SvfCoefs svfCoefsAt (float64 hz, float64 sr, float k)
+    {
+        return svfCoefs (prewarp (hz, sr), k);
+    }
+
+    /// One sample through integrator states ic1, ic2 (one channel's, or a stereo pair's): the
+    /// lowpass and bandpass outputs (highpass = x - k bp - lp).
+    void svfTick<T> (T& ic1, T& ic2, const SvfCoefs& c, T x, T& lp, T& bp)
+    {
+        let v3 = x - ic2;
+        let v1 = c.a1 * ic1 + c.a2 * v3;
+        let v2 = ic2 + c.a2 * ic1 + c.a3 * v3;
+        ic1 = 2.0f * v1 - ic1;
+        ic2 = 2.0f * v2 - ic2;
+        lp = v2;
+        bp = v1;
+    }
+
+    void tick (Svf& this, const SvfCoefs& c, float<2> x, float<2>& lp, float<2>& bp)
+    {
+        svfTick (this.ic1, this.ic2, c, x, lp, bp);
+    }
+
+    /// The 2nd-order allpass with the same coefficients (the phase of a crossover's band sum).
+    float<2> allpass (Svf& this, const SvfCoefs& c, float<2> x)
+    {
+        float<2> lp, bp;
+        this.tick (c, x, lp, bp);
+        return x - 2.0f * c.k * bp;
+    }
+
+    void reset (Svf& this)
+    {
+        this.ic1 = float<2> (0.0f, 0.0f);
+        this.ic2 = float<2> (0.0f, 0.0f);
+    }
+
+    /// Butterworth damping: two in series make a Linkwitz-Riley crossover.
+    let butterworthK = 1.41421356f;
+
+    /// A stereo Linkwitz-Riley 4th-order crossover: low + high is the 2nd-order allpass of the
+    /// same frequency, so the bands sum flat. Use svfCoefsAt (hz, sr, butterworthK).
+    struct Crossover
+    {
+        Svf lp1, lp2, hp1, hp2;
+    }
+
+    void split (Crossover& this, const SvfCoefs& c, float<2> x, float<2>& low, float<2>& high)
+    {
+        float<2> lp, bp;
+        this.lp1.tick (c, x, lp, bp);
+        this.lp2.tick (c, lp, low, bp);
+        this.hp1.tick (c, x, lp, bp);
+        let h = x - c.k * bp - lp;
+        this.hp2.tick (c, h, lp, bp);
+        high = h - c.k * bp - lp;
+    }
+
+    void reset (Crossover& this)
+    {
+        this.lp1.reset(); this.lp2.reset(); this.hp1.reset(); this.hp2.reset();
+    }
+
+    //==============================================================================
+    // interpolation and shaping
+
+    /// 4-point cubic (Catmull-Rom) interpolation between y1 (t = 0) and y2 (t = 1).
+    T hermite<T> (T y0, T y1, T y2, T y3, float t)
+    {
+        let c1 = 0.5f * (y2 - y0);
+        let c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+        let c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+        return ((c3 * t + c2) * t + c1) * t + y1;
+    }
+
+    /// Linear up to +-1, then bending smoothly towards +-2: bounds a feedback loop without
+    /// colouring normal levels.
+    float softClip (float x)
+    {
+        let a = abs (x);
+
+        if (a <= 1.0f)
+            return x;
+
+        let y = 1.0f + tanh (a - 1.0f);
+        return x < 0 ? -y : y;
+    }
+
+    float<2> softClip (float<2> x)
+    {
+        return float<2> (softClip (x[0]), softClip (x[1]));
+    }
+
+    /// The louder side of a frame.
+    float peak (float<2> x)
+    {
+        return max (abs (x[0]), abs (x[1]));
+    }
+
+    //==============================================================================
+    // noise
+
+    /// A plain LCG, for noise.
+    struct Lcg
+    {
+        int64 state;
+    }
+
+    /// The next value, -1..1.
+    float nextSigned (Lcg& this)
+    {
+        this.state = (this.state * 1103515245 + 12345) & 0x7fffffff;
+        return float (this.state) * (1.0f / 1073741824.0f) - 1.0f;
+    }
+
+    //==============================================================================
+    // tails
+
+    /// Whether any sample of a block is above the threshold.
+    bool anyAbove<Buf> (const Buf& buf, float threshold)
+    {
+        for (wrap<buf.size> i)
+            if (abs (buf[i][0]) > threshold || abs (buf[i][1]) > threshold)
+                return true;
+
+        return false;
+    }
+
+    /// An effect's tail bookkeeping after a block of n frames: silentCount counts the samples
+    /// since the effect was last `fed` sound (its input, or what went into its memory), and it
+    /// is awake while its output is `loud`. Returns loud; the caller puts it to sleep (idle)
+    /// once silentCount passes its tail's length.
+    bool stillSounding (bool& idle, int& silentCount, int n, bool fed, bool loud)
+    {
+        silentCount = fed ? 0 : silentCount + n;
+
+        if (loud)
+            idle = false;
+
+        return loud;
+    }
+
+    /// The same where the count restarts whenever the output is loud.
+    bool stillSounding (bool& idle, int& silentCount, int n, bool loud)
+    {
+        return stillSounding (idle, silentCount, n, loud, loud);
+    }
+
+    //==============================================================================
+    // tempo
+
+    /// Samples per note length: `beats` quarter notes at `bpm`.
+    float64 beatSamples (float64 beats, float64 bpm, float64 sr)
+    {
+        return beats * 60.0 * sr / max (bpm, 1.0);
+    }
+}
