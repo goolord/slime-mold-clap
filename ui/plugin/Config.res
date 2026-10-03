@@ -3,7 +3,7 @@
 // plugin.cmajorpatch; `just rename` changes them all.)
 
 // the name in the header
-let brand = "physarum"
+let brand = "slimemold"
 
 // The size the pages are laid out at, in design pixels. The window scales the whole stage, keeping
 // this aspect ratio; tools/gen.mjs copies it into the manifest's view size.

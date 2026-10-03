@@ -1,17 +1,17 @@
 {
     "CmajorVersion":    1,
-    "ID":               "dev.slimemold.physarum",
+    "ID":               "dev.goolord.slimemold",
     "version":          "0.1",
-    "name":             "Physarum",
+    "name":             "Slimemold",
     "description":      "A feedback delay network reverb whose matrix grows like a slime mould",
     "category":         "effect",
-    "manufacturer":     "Physarum",
+    "manufacturer":     "goolord",
     "isInstrument":     false,
 
     "plugin":
     {
-        "manufacturerCode":  "Phys",
-        "pluginCode":        "Phys"
+        "manufacturerCode":  "Gool",
+        "pluginCode":        "Slim"
     },
 
     "source":           [ "dsp/Params.cmajor", "dsp/PhysarumFdn.cmajor", "dsp/Plugin.cmajor", "dsp/lib/Common.cmajor", "dsp/lib/Utility.cmajor" ],

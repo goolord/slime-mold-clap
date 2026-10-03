@@ -2,6 +2,6 @@
 // load another plugin's presets or banks: the Load button, drag and drop, the browser and the
 // factory presets (presets/) all take any format listed.
 
-let all = [PresetFormat.jsonFormat(~name="Physarum preset", ~extension=".preset")]
+let all = [PresetFormat.jsonFormat(~name="Slimemold preset", ~extension=".preset")]
 
 PresetFormat.register(all)

@@ -1,5 +1,5 @@
 {
-  "name": "physarum",
+  "name": "slimemold",
   "sources": [
     { "dir": "ui", "subdirs": true },
     { "dir": "worker" }
