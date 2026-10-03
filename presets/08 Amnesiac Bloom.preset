@@ -1,0 +1,31 @@
+{
+  "name": "Amnesiac Bloom",
+  "author": "Physarum",
+  "category": "space",
+  "tags": [
+    "huge",
+    "growing",
+    "dense"
+  ],
+  "description": "No memory and no pruning: any tube that carries flux grows at full speed and never withers, so the network fills in for good and the biggest room grows denser the longer it plays.",
+  "values": {
+    "growthRate": 1,
+    "decayRate": 0,
+    "memory": 0,
+    "gamma": 1,
+    "decayTime": 0.801,
+    "damping": 0.4,
+    "roomSize": 2,
+    "mix": 0.5,
+    "soften": 0.5,
+    "diffusion": 0.8,
+    "food1": 1,
+    "food2": 0,
+    "food3": 0,
+    "food4": 0,
+    "food5": 1,
+    "food6": 0,
+    "food7": 0,
+    "food8": 0
+  }
+}

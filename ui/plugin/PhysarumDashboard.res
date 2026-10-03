@@ -61,7 +61,7 @@ let vitals = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
       let openTubes =
         bridge.conductance->Option.mapOr(0, ws =>
           ws->Array.reduceWithIndex(0, (n, w, k) =>
-            k / FdnModel.size != mod(k, FdnModel.size) && w > threshold ? n + 1 : n
+            k / FdnModel.size != mod(k, FdnModel.size) && w >= threshold ? n + 1 : n
           )
         )
       let bounded = s.sigmaMax <= 1.0000005
@@ -121,7 +121,14 @@ let build = (ctx: Ctx.t, page) => {
     ~y=Panel.bottom(plasticity),
     ~h=190.,
     ~plot=SlimePlots.decay,
-    [("decayTime", "decay time"), ("damping", "damping"), ("roomSize", "room size"), ("mix", "dry/wet")],
+    [
+      ("decayTime", "decay"),
+      ("damping", "damping"),
+      ("roomSize", "room"),
+      ("soften", "soften"),
+      ("diffusion", "diffusion"),
+      ("mix", "dry/wet"),
+    ],
   )
 
   // the loop matrix, and the output level

@@ -23,8 +23,13 @@
 //  one-pole lowpass built so that it can't add energy even while its coefficient moves.
 //  docs/STABILITY.md proves that this bounds the output for any input and any parameters.
 //
-//  Per sample:   taps x = delayed lines,  y = g * lowpass (x),  s = A(t) y + B u,  lines <- s
+//  Per sample:   taps x = delayed lines,  y = g * lowpass (x),  s = A(t) y + B v,  lines <- s
 //                out = dry * u + wet * C x
+//  where v is the input as the network hears it: first softened (a sharp onset ducks the send, so
+//  a click or a hard attack doesn't go round the loop at full level), then diffused (a chain of
+//  allpasses smears what's left into a short dense burst, so it doesn't come back from each line
+//  as a separate click). Both are outside the loop, with gains of at most 1, so they leave the
+//  stability argument as it is.
 //  A(t) ramps linearly from the previous update's matrix to the new one over the K samples (a
 //  convex combination of two matrices of norm <= 1, so of norm <= 1 itself).
 //
@@ -89,9 +94,34 @@ namespace plugin
         /// A change of length crossfades over at least this many samples, and four times the change.
         let minFadeLength = 2048;
 
+        /// The input diffuser: four allpasses per side, 3 to 10 ms long at 48 kHz (primes, the
+        /// sides a little apart so that they decorrelate), the left's then the right's.
+        let diffuserStages = 6;
+        let diffusers = 2 * diffuserStages;
+        let diffuserPrimes = int[diffusers] (47, 79, 131, 199, 293, 409, 53, 83, 139, 211, 283, 421);
+        let diffuserBufferSize = 4096;
+        let diffuserMask = diffuserBufferSize - 1;
+
+        /// The allpasses' coefficient at full diffusion: higher, and the burst rings.
+        let maxDiffusion = 0.72;
+
+        /// The softener compares a fast envelope (instant attack) with a slow one (this attack,
+        /// ms): during an onset the fast one is ahead, and the send is ducked by how far.
+        let softenAttackMs = 20.0;
+        let softenReleaseMs = 80.0;
+
+        /// How far ahead (as a ratio) the fast envelope can get before anything is ducked: about
+        /// 2 dB, so the ripple of a steady low note isn't mistaken for an onset.
+        let softenDeadband = 1.26f;
+
         struct Line
         {
             float[bufferSize] samples;
+        }
+
+        struct Allpass
+        {
+            float[diffuserBufferSize] samples;
         }
 
         /// The flat index of row r, column c.
@@ -227,6 +257,13 @@ namespace plugin
         // where the input goes in (B) and the taps come out (C), left and right
         float<2>[fdn::size] inject, tapOut;
 
+        // the input diffuser, its lengths and coefficient; the softener's envelopes and amount
+        fdn::Allpass[fdn::diffusers] diffuser;
+        int[fdn::diffusers] diffuserLength;
+        wrap<fdn::diffuserBufferSize> diffuserPos;
+        float diffusion, diffusionTarget;
+        float softFast, softSlow, softAttack, softRelease, soften, softenTarget;
+
         // the tubes: D[i * size + j] for i -> j, the Hadamard signs and the tube lengths
         float64[fdn::cells] conductance, signs, tubeLengths;
         float64[fdn::size] pressure;
@@ -260,6 +297,14 @@ namespace plugin
             }
 
             energyCoef = lib::smoothing (processor.frequency, fdn::pressureMs, 1);
+            softAttack = lib::smoothing (processor.frequency, fdn::softenAttackMs, 1);
+            softRelease = lib::smoothing (processor.frequency, fdn::softenReleaseMs, 1);
+
+            let rateScale = processor.frequency / fdn::referenceRate;
+
+            for (wrap<fdn::diffusers> i)
+                diffuserLength[i] = min (fdn::primeAtLeast (int (float64 (fdn::diffuserPrimes[i]) * rateScale + 0.5)),
+                                         fdn::primeAtMost (fdn::diffuserMask));
 
             updateRouting();
             updateTargetLengths();
@@ -423,6 +468,9 @@ namespace plugin
             dryTarget = cos (m * float (pi) * 0.5f);
             wetTarget = sin (m * float (pi) * 0.5f);
 
+            diffusionTarget = float (fdn::maxDiffusion) * clamp (p.diffusion, 0.0f, 1.0f);
+            softenTarget = clamp (p.soften, 0.0f, 1.0f);
+
             let k = snap ? 1.0f : lib::smoothing (sr, 30.0, fdn::updateInterval);
 
             dampCoef += (dampTarget - dampCoef) * k;
@@ -431,6 +479,8 @@ namespace plugin
             wetGain += (wetGainTarget - wetGain) * k;
             dryLevel += (dryTarget - dryLevel) * k;
             wetLevel += (wetTarget - wetLevel) * k;
+            diffusion += (diffusionTarget - diffusion) * k;
+            soften += (softenTarget - soften) * k;
 
             // (a blend of gains below the ceiling stays below it)
             for (wrap<fdn::size> i)
@@ -697,10 +747,53 @@ namespace plugin
         //==============================================================================
         // audio
 
+        /// The send's gain for this frame: 1, unless the input has just jumped. A fast envelope
+        /// follows its peak at once, a slow one catches up over softenAttackMs; while the fast
+        /// one is more than the deadband ahead, the gain is (deadband slow / fast)^soften, so at
+        /// full softening the send rises no faster than the slow envelope. (Both release alike,
+        /// so a steady or falling sound isn't touched.)
+        float softenGain (float<2> u)
+        {
+            let level = max (abs (u[0]), abs (u[1]));
+
+            softFast = level > softFast ? level : softFast + softRelease * (level - softFast);
+            softSlow += (level > softSlow ? softAttack : softRelease) * (level - softSlow);
+
+            if (soften <= 0.0f)
+                return 1.0f;
+
+            let ratio = fdn::softenDeadband * (softSlow + 1.0e-6f) / (softFast + 1.0e-6f);
+            return ratio >= 1.0f ? 1.0f : pow (ratio, soften);
+        }
+
+        /// The input through the four allpasses on its side:
+        ///     w[n] = x[n] + g w[n - D],  y[n] = w[n - D] - g w[n]
+        /// Each passes every frequency at unity gain, but spreads an impulse into a decaying train
+        /// of echoes, and four of them in series into a dense burst a few tens of ms long.
+        float<2> diffuse (float<2> u)
+        {
+            let g = diffusion;
+            var out = u;
+
+            for (wrap<fdn::diffusers> i)
+            {
+                let side = int (i) < fdn::diffuserStages ? 0 : 1;
+                let x = out[side];
+                let delayed = diffuser[i].samples.at ((int (diffuserPos) - diffuserLength[i]) & fdn::diffuserMask);
+                let w = x + g * delayed;
+                diffuser[i].samples[diffuserPos] = w;
+                out[side] = delayed - g * w;
+            }
+
+            ++diffuserPos;
+            return out;
+        }
+
         /// One frame, at t (0..1) through the matrix's ramp.
         void processFrame (float t)
         {
             let u = in;
+            let v = diffuse (u * softenGain (u));
             float[fdn::size] y;
             var wet = float<2> (0.0f, 0.0f);
 
@@ -725,7 +818,7 @@ namespace plugin
                     to += mixTo[fdn::cell (r, c)] * y[c];
                 }
 
-                lines[r].samples[writePos] = from + t * (to - from) + inject[r][0] * u[0] + inject[r][1] * u[1];
+                lines[r].samples[writePos] = from + t * (to - from) + inject[r][0] * v[0] + inject[r][1] * v[1];
             }
 
             ++writePos;

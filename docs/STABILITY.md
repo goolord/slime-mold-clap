@@ -22,6 +22,13 @@ out(n) = d(n) u(n) + w(n) C x(n)      dry and wet
 levels in [0, 1]. Everything else depends on time, and the matrix `A(n)` also depends on the signal
 through the conductances.
 
+(Strictly, the loop hears `v = D[h · u]` rather than `u`: the input ducked by the attack softener's
+gain `h(n)` in [0, 1], then through the diffuser `D`, a chain of allpasses
+`w(n) = x(n) + g w(n − L)`, `y(n) = w(n − L) − g w(n)` with `0 ≤ g ≤ 0.72`. Each has
+`sup|w| ≤ sup|x| / (1 − g)` and so `sup|y| ≤ sup|x| (1 + g) / (1 − g)`, whatever `g` does over time,
+so `sup|v| ≤ K sup|u|` for a fixed `K`. Both are outside the loop: everything below holds with
+`sup|v|` in place of `sup|u|`.)
+
 Notation: `‖v‖` is the Euclidean norm of a vector, `‖M‖₂` the spectral norm of a matrix (its
 largest singular value), and `‖e‖_ℓ2` the energy norm of a signal, `√Σₙ ‖e(n)‖²`.
 

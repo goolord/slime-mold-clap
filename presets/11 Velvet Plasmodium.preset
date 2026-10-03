@@ -1,0 +1,31 @@
+{
+  "name": "Velvet Plasmodium",
+  "author": "Physarum",
+  "category": "reverb",
+  "tags": [
+    "smooth",
+    "soft",
+    "drums"
+  ],
+  "description": "Attack softening and diffusion all the way up: drums, plucks and clicks go in as soft swells, so the tail never throws a transient back at you.",
+  "values": {
+    "growthRate": 0.5663,
+    "decayRate": 0.4924,
+    "memory": 0.5,
+    "gamma": 1.5,
+    "decayTime": 0.6505,
+    "damping": 0.45,
+    "roomSize": 1.4,
+    "mix": 0.4,
+    "soften": 1,
+    "diffusion": 1,
+    "food1": 1,
+    "food2": 0,
+    "food3": 1,
+    "food4": 0,
+    "food5": 1,
+    "food6": 0,
+    "food7": 1,
+    "food8": 0
+  }
+}

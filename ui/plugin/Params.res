@@ -7,9 +7,10 @@
 // its frequency or time but keeps its position for hosts to automate.
 //
 // The Physarum FDN (dsp/PhysarumFdn.cmajor): four tube-plasticity parameters that drive how the
-// feedback matrix grows and prunes itself, four reverb parameters, and the eight "food" switches
+// feedback matrix grows and prunes itself, four reverb parameters, the eight "food" switches
 // that say which delay lines the input is fed into (clicked on the network graph rather than
-// automated, so hidden from the host's list).
+// automated, so hidden from the host's list), and two that tame the input before it goes in, so
+// that clicks and hard attacks don't ring round the loop.
 
 open Param
 
@@ -38,4 +39,8 @@ let all = [
   toggle("food6", "Food 6", ~init=true, ~hidden=true),
   toggle("food7", "Food 7", ~hidden=true),
   toggle("food8", "Food 8", ~hidden=true),
+  // the input as the network hears it (appended, so the parameters above keep their places):
+  // how far an onset is ducked before it goes in, and how much it is smeared once it does
+  percent("soften", "Attack Soften", ~init=0.3),
+  percent("diffusion", "Diffusion", ~init=0.7),
 ]

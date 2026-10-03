@@ -1,0 +1,31 @@
+{
+  "name": "Pinhole Resonator",
+  "author": "Physarum",
+  "category": "texture",
+  "tags": [
+    "tiny",
+    "ringing",
+    "metallic"
+  ],
+  "description": "The smallest room with a fixed lattice, no damping and the longest decay: eight short lines that ring like struck metal. Lower the decay or add damping to tame it.",
+  "values": {
+    "growthRate": 0.625,
+    "decayRate": 0.534,
+    "memory": 1,
+    "gamma": 1.5,
+    "decayTime": 1,
+    "damping": 0,
+    "roomSize": 0.25,
+    "mix": 0.3,
+    "soften": 0.5,
+    "diffusion": 0.3,
+    "food1": 1,
+    "food2": 0,
+    "food3": 0,
+    "food4": 1,
+    "food5": 0,
+    "food6": 1,
+    "food7": 0,
+    "food8": 0
+  }
+}

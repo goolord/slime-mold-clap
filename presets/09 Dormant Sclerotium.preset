@@ -1,0 +1,31 @@
+{
+  "name": "Dormant Sclerotium",
+  "author": "Physarum",
+  "category": "drone",
+  "tags": [
+    "huge",
+    "dark",
+    "slow"
+  ],
+  "description": "The colony asleep: the slowest growth, the slowest pruning, no memory, the biggest room and the longest, darkest tail, with attacks fully softened. Anything you feed it becomes a slow black drone.",
+  "values": {
+    "growthRate": 0,
+    "decayRate": 0,
+    "memory": 0,
+    "gamma": 2,
+    "decayTime": 1,
+    "damping": 0.9,
+    "roomSize": 2,
+    "mix": 0.6,
+    "soften": 1,
+    "diffusion": 1,
+    "food1": 0,
+    "food2": 0,
+    "food3": 0,
+    "food4": 1,
+    "food5": 0,
+    "food6": 0,
+    "food7": 0,
+    "food8": 0
+  }
+}

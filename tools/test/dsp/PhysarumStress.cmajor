@@ -1,7 +1,7 @@
 // uses: dsp/Params.cmajor dsp/PhysarumFdn.cmajor
 // The stability guarantee under abuse: the most plastic tubes (fastest growth, slowest pruning,
-// no lattice memory, the sharpest growth curve), the longest decay, damping slamming between none
-// and full, fully wet,
+// no lattice memory, the sharpest growth curve), the longest decay, damping, attack softening and
+// diffusion slamming between none and full, fully wet,
 // room size jumping between its extremes ten times a second, and the bursts 50 times too loud.
 // The output is scaled back down by 50: bounded means it stays near the input's level.
 
@@ -33,6 +33,8 @@ processor Abuse
             {
                 v.roomSize = ((n / jump) % 2) == 0 ? 2.0f : 0.25f;
                 v.damping = ((n / jump) % 3) == 0 ? 1.0f : 0.0f;
+                v.soften = ((n / jump) % 5) < 2 ? 1.0f : 0.0f;
+                v.diffusion = ((n / jump) % 7) < 3 ? 1.0f : 0.0f;
                 paramsOut <- v;
             }
 

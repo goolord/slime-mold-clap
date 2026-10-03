@@ -1,0 +1,31 @@
+{
+  "name": "Spore Closet",
+  "author": "Physarum",
+  "category": "texture",
+  "tags": [
+    "tiny",
+    "metallic",
+    "fast"
+  ],
+  "description": "The smallest room, no memory, the sharpest flux curve and the fastest growth and pruning there are: the tubes flicker open and shut many times a second inside a tiny tin box.",
+  "values": {
+    "growthRate": 1,
+    "decayRate": 1,
+    "memory": 0,
+    "gamma": 2,
+    "decayTime": 0.213,
+    "damping": 0,
+    "roomSize": 0.25,
+    "mix": 0.45,
+    "soften": 0.2,
+    "diffusion": 0.15,
+    "food1": 0,
+    "food2": 0,
+    "food3": 1,
+    "food4": 0,
+    "food5": 0,
+    "food6": 0,
+    "food7": 0,
+    "food8": 0
+  }
+}
