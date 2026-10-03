@@ -9,6 +9,7 @@ type gradient
 @send external ellipse: (context2d, float, float, float, float, float, float, float) => unit = "ellipse"
 @send external rect: (context2d, float, float, float, float) => unit = "rect"
 @send external clip: context2d => unit = "clip"
+@send external drawImage: (context2d, Web.element, float, float) => unit = "drawImage"
 
 @set external setShadowBlur: (context2d, float) => unit = "shadowBlur"
 @set external setShadowColor: (context2d, string) => unit = "shadowColor"
