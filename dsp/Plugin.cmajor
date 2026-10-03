@@ -10,10 +10,10 @@ graph Plugin  [[ main ]]
     output stream float<2> out                  [[ name: "Audio Out" ]];
     // for the view: peak levels, and the network (see PhysarumFdn)
     output event float<2> meterOut;
-    output event float[64] matrixState;
-    output event float[64] feedbackMatrix;
-    output event float[8] nodeEnergy;
-    output event float[8] nodeDelayMs;
+    output event float[plugin::fdn::cells] matrixState;
+    output event float[plugin::fdn::cells] feedbackMatrix;
+    output event float[plugin::fdn::size] nodeEnergy;
+    output event float[plugin::fdn::size] nodeDelayMs;
     output event float[4] networkStats;
 
     node params    = Params;

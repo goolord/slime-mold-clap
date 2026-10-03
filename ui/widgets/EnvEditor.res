@@ -217,10 +217,10 @@ let adsr = (
   let model = ctx.model
   let amp = kind == #amp
   let def = id => model->ParamModel.def(id)
-  let ms = id => (def(id)).plain(model->ParamModel.get(id))
+  let ms = ParamModel.plain(model, _)
   let optMs = id => id->Option.mapOr(0., ms)
   let level = id => levelOf(def(id), model->ParamModel.get(id))
-  let curve = id => id->Option.mapOr(0., id => (def(id)).plain(model->ParamModel.get(id)))
+  let curve = id => id->Option.mapOr(0., ParamModel.plain(model, _))
   // decay 1 is there with both its time and its breakpoint
   let decay1 = switch (ids.decay1, ids.breakpoint) {
   | (Some(t), Some(l)) => Some((t, l))

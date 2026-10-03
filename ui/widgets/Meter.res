@@ -41,7 +41,6 @@ let peakHold = 1000.
 let stale = 300.
 
 // the clock requestAnimationFrame's times are on
-@val external performanceNow: unit => float = "performance.now"
 
 let decodeLevels = (json: JSON.t) =>
   switch json {

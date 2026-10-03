@@ -94,8 +94,8 @@ namespace plugin
         /// A change of length crossfades over at least this many samples, and four times the change.
         let minFadeLength = 2048;
 
-        /// The input diffuser: four allpasses per side, 3 to 10 ms long at 48 kHz (primes, the
-        /// sides a little apart so that they decorrelate), the left's then the right's.
+        /// The input diffuser: diffuserStages allpasses per side, 1 to 9 ms long at 48 kHz (primes,
+        /// the sides a little apart so that they decorrelate), the left's then the right's.
         let diffuserStages = 6;
         let diffusers = 2 * diffuserStages;
         let diffuserPrimes = int[diffusers] (47, 79, 131, 199, 293, 409, 53, 83, 139, 211, 283, 421);
@@ -167,6 +167,9 @@ namespace plugin
             return float<2> (sqrt (0.5f * (1.0f - x)), sqrt (0.5f * (1.0f + x)));
         }
 
+        /// A tube's effective conductance W: the lattice it remembers, and what it has grown.
+        float64 effective (float64 memory, float64 d)     { return memory + (1.0 - memory) * d; }
+
         /// The growth function f(q) = q^gamma / (1 + q^gamma), for q >= 0: tubes saturate.
         float64 growth (float64 q, float64 gamma)
         {
@@ -234,9 +237,13 @@ namespace plugin
 
         event paramsIn (params::Values v)
         {
+            // (every change of any parameter brings all of them: only a new room searches for primes)
+            let resized = v.roomSize != p.roomSize;
             p = v;
             updateRouting();
-            updateTargetLengths();
+
+            if (resized)
+                updateTargetLengths();
         }
 
         //==============================================================================
@@ -245,14 +252,17 @@ namespace plugin
         fdn::Line[fdn::size] lines;
         wrap<fdn::bufferSize> writePos;
 
-        // the length read; during a crossfade, the one faded to, and where the fade is
+        // the length read; the one it is fading to (the same when not fading), and where the fade is
         int[fdn::size] length, nextLength, targetLength, fadePos, fadeLag, fadeLength;
         bool[fdn::size] fading;
 
         // per line: the damping filter, the level follower (mean square), the loop gain
-        float[fdn::size] lowpass, energy, loopGain, loopGainTarget;
-        float dampCoef, dampTarget, dampPole, dampCross, energyCoef;
-        float wetGain, wetGainTarget, dryLevel, dryTarget, wetLevel, wetTarget;
+        float[fdn::size] lowpass, energy, loopGain;
+        float dampCoef, dampPole, dampCross, energyCoef;
+        float wetGain, dryLevel, wetLevel;
+
+        // how far the coefficients glide towards their targets each update
+        float glide;
 
         // where the input goes in (B) and the taps come out (C), left and right
         float<2>[fdn::size] inject, tapOut;
@@ -261,8 +271,8 @@ namespace plugin
         fdn::Allpass[fdn::diffusers] diffuser;
         int[fdn::diffusers] diffuserLength;
         wrap<fdn::diffuserBufferSize> diffuserPos;
-        float diffusion, diffusionTarget;
-        float softFast, softSlow, softAttack, softRelease, soften, softenTarget;
+        float diffusion;
+        float softFast, softSlow, softAttack, softRelease, soften;
 
         // the tubes: D[i * size + j] for i -> j, the Hadamard signs and the tube lengths
         float64[fdn::cells] conductance, signs, tubeLengths;
@@ -271,6 +281,8 @@ namespace plugin
         // the projection's working matrices, and the matrices the audio ramps between
         float64[fdn::cells] work, gram, temp;
         float[fdn::cells] mixFrom, mixTo;
+        // the memory the last matrix was built with
+        float64 builtMemory;
 
         // reports for the view
         float64[fdn::size] powerVector;
@@ -299,6 +311,7 @@ namespace plugin
             energyCoef = lib::smoothing (processor.frequency, fdn::pressureMs, 1);
             softAttack = lib::smoothing (processor.frequency, fdn::softenAttackMs, 1);
             softRelease = lib::smoothing (processor.frequency, fdn::softenReleaseMs, 1);
+            glide = lib::smoothing (processor.frequency, 30.0, fdn::updateInterval);
 
             let rateScale = processor.frequency / fdn::referenceRate;
 
@@ -330,27 +343,16 @@ namespace plugin
         //==============================================================================
         // routing and lengths
 
-        bool isFed (int i)
-        {
-            if (i == 0) return p.food1;
-            if (i == 1) return p.food2;
-            if (i == 2) return p.food3;
-            if (i == 3) return p.food4;
-            if (i == 4) return p.food5;
-            if (i == 5) return p.food6;
-            if (i == 6) return p.food7;
-            return p.food8;
-        }
-
         /// The input goes into the fed lines (all of them when none is), panned by where each
         /// node sits on the ring; the taps come out the same way, alternating in sign so that the
         /// lines don't all pile up in the middle.
         void updateRouting()
         {
+            let fed = bool[fdn::size] (p.food1, p.food2, p.food3, p.food4, p.food5, p.food6, p.food7, p.food8);
             var count = 0;
 
             for (wrap<fdn::size> i)
-                if (isFed (int (i)))
+                if (fed[i])
                     ++count;
 
             let all = count == 0;
@@ -359,7 +361,7 @@ namespace plugin
             for (wrap<fdn::size> i)
             {
                 let pan = fdn::panGains (int (i));
-                inject[i] = (all || isFed (int (i))) ? pan * norm : float<2> (0.0f, 0.0f);
+                inject[i] = (all || fed[i]) ? pan * norm : float<2> (0.0f, 0.0f);
                 // the gains' squares sum to size / 2 per side: 0.5 makes it unity
                 tapOut[i] = pan * ((int (i) % 2) == 0 ? 0.5f : -0.5f);
             }
@@ -447,44 +449,34 @@ namespace plugin
             // sample, and the filter can't add energy even while its coefficient glides (the
             // usual y += a (x - y) can, when a falls quickly: it holds a loud sample longer).
             let d = clamp (p.damping, 0.0f, 1.0f);
-            dampTarget = d <= 0.0f ? 1.0f : lib::onePoleCoef (500.0 * pow (40.0, float64 (1.0f - d)), sr);
+            let dampTarget = d <= 0.0f ? 1.0f : lib::onePoleCoef (500.0 * pow (40.0, float64 (1.0f - d)), sr);
 
             // the loop gain that takes each line down 60 dB in the decay time, below the ceiling
             let t60 = max (float64 (p.decayTime), 0.05);
+            let k = snap ? 1.0f : glide;
             var sumSquares = 0.0f;
 
+            // (a blend of gains below the ceiling stays below it)
             for (wrap<fdn::size> i)
             {
-                let n = fading[i] ? nextLength[i] : length[i];
-                let g = float (pow (10.0, -3.0 * float64 (n) / (t60 * sr)));
-                loopGainTarget[i] = min (g, fdn::gainCeiling);
-                sumSquares += loopGainTarget[i] * loopGainTarget[i];
+                let g = min (float (pow (10.0, -3.0 * float64 (nextLength[i]) / (t60 * sr))), fdn::gainCeiling);
+                sumSquares += g * g;
+                loopGain[i] += (g - loopGain[i]) * k;
             }
 
             // a long decay piles up more energy: lean the wet level against it, part way
-            wetGainTarget = sqrt (sqrt (max (1.0f - sumSquares / float (fdn::size), 0.0f)));
+            let wetGainTarget = sqrt (sqrt (max (1.0f - sumSquares / float (fdn::size), 0.0f)));
 
             let m = clamp (p.mix, 0.0f, 1.0f);
-            dryTarget = cos (m * float (pi) * 0.5f);
-            wetTarget = sin (m * float (pi) * 0.5f);
-
-            diffusionTarget = float (fdn::maxDiffusion) * clamp (p.diffusion, 0.0f, 1.0f);
-            softenTarget = clamp (p.soften, 0.0f, 1.0f);
-
-            let k = snap ? 1.0f : lib::smoothing (sr, 30.0, fdn::updateInterval);
 
             dampCoef += (dampTarget - dampCoef) * k;
             dampPole = 1.0f - dampCoef;
             dampCross = sqrt (dampCoef * dampPole);
             wetGain += (wetGainTarget - wetGain) * k;
-            dryLevel += (dryTarget - dryLevel) * k;
-            wetLevel += (wetTarget - wetLevel) * k;
-            diffusion += (diffusionTarget - diffusion) * k;
-            soften += (softenTarget - soften) * k;
-
-            // (a blend of gains below the ceiling stays below it)
-            for (wrap<fdn::size> i)
-                loopGain[i] += (loopGainTarget[i] - loopGain[i]) * k;
+            dryLevel += (cos (m * float (pi) * 0.5f) - dryLevel) * k;
+            wetLevel += (sin (m * float (pi) * 0.5f) - wetLevel) * k;
+            diffusion += (float (fdn::maxDiffusion) * clamp (p.diffusion, 0.0f, 1.0f) - diffusion) * k;
+            soften += (clamp (p.soften, 0.0f, 1.0f) - soften) * k;
         }
 
         //==============================================================================
@@ -492,7 +484,8 @@ namespace plugin
 
         /// One step of the tube dynamics, dt = K / sr long. Integrated exactly for a flux held over
         /// the step: D relaxes towards alpha f / mu with factor e^(-mu dt), which can't overshoot
-        /// or go unstable whatever the rates. Then the new matrix.
+        /// or go unstable whatever the rates. Then the new matrix, unless no tube has moved (in
+        /// silence they all settle at minConductance and stay there), when the old one stands.
         void adaptNetwork()
         {
             let dt = float64 (fdn::updateInterval) / processor.frequency;
@@ -508,6 +501,7 @@ namespace plugin
             let gamma = clamp (float64 (p.gamma), 1.0, 2.0);
             let memory = clamp (float64 (p.memory), 0.0, 1.0);
             let keep = exp (-mu * dt);
+            var changed = memory != builtMemory;
 
             for (wrap<fdn::size> i)
             {
@@ -516,28 +510,32 @@ namespace plugin
                     if (i != j)
                     {
                         let k = fdn::cell (i, j);
-                        let w = memory + (1.0 - memory) * conductance[k];
-                        let q = fdn::fluxGain * w / tubeLengths[k] * (pressure[i] - pressure[j]);
+                        let q = fdn::fluxGain * fdn::effective (memory, conductance[k]) / tubeLengths[k] * (pressure[i] - pressure[j]);
                         let equilibrium = alpha / mu * fdn::growth (q, gamma);
-                        let d = equilibrium + (conductance[k] - equilibrium) * keep;
-                        conductance[k] = clamp (d, fdn::minConductance, 1.0);
+                        let d = clamp (equilibrium + (conductance[k] - equilibrium) * keep, fdn::minConductance, 1.0);
+                        changed = changed || d != conductance[k];
+                        conductance[k] = d;
                     }
                 }
             }
 
-            buildMatrix (memory);
-            project();
+            mixFrom = mixTo;
 
-            for (wrap<fdn::cells> k)
+            if (changed)
             {
-                mixFrom[k] = mixTo[k];
-                mixTo[k] = float (work[k]);
+                buildMatrix (memory);
+                project();
+
+                for (wrap<fdn::cells> k)
+                    mixTo[k] = float (work[k]);
             }
         }
 
         /// The matrix to project, into work: A[r][c] (line c into line r) from tube c -> r.
         void buildMatrix (float64 memory)
         {
+            builtMemory = memory;
+
             for (wrap<fdn::size> r)
             {
                 for (wrap<fdn::size> c)
@@ -550,26 +548,27 @@ namespace plugin
                     }
                     else
                     {
-                        let w = memory + (1.0 - memory) * conductance[fdn::cell (c, r)];
+                        let w = fdn::effective (memory, conductance[fdn::cell (c, r)]);
                         work[k] = signs[k] * sqrt (w * fdn::shortestTube / tubeLengths[k]);
                     }
                 }
             }
         }
 
-        /// gram = work^T work.
+        /// gram = work^T work (symmetric: the upper triangle, mirrored).
         void computeGram()
         {
             for (wrap<fdn::size> a)
             {
-                for (wrap<fdn::size> b)
+                for (var b = int (a); b < fdn::size; ++b)
                 {
                     var s = 0.0;
 
                     for (wrap<fdn::size> r)
-                        s += work[fdn::cell (r, a)] * work[fdn::cell (r, b)];
+                        s += work[fdn::cell (r, a)] * work[fdn::cell (r, wrap<fdn::size> (b))];
 
-                    gram[fdn::cell (a, b)] = s;
+                    gram[fdn::cell (a, wrap<fdn::size> (b))] = s;
+                    gram[fdn::cell (wrap<fdn::size> (b), a)] = s;
                 }
             }
         }
@@ -670,9 +669,8 @@ namespace plugin
         /// A^T A, carried on from the last time.
         float largestSingularValue()
         {
-            for (wrap<fdn::size> r)
-                for (wrap<fdn::size> c)
-                    work[fdn::cell (r, c)] = float64 (mixTo[fdn::cell (r, c)]);
+            for (wrap<fdn::cells> k)
+                work[k] = float64 (mixTo[k]);
 
             computeGram();
             var lambda = 0.0;
@@ -707,29 +705,28 @@ namespace plugin
 
         void sendState()
         {
-            float[fdn::cells] w, a;
+            float[fdn::cells] w;
             float[fdn::size] pressures, delays;
-            let memory = clamp (float64 (p.memory), 0.0, 1.0);
             var total = 0.0;
-
-            for (wrap<fdn::cells> k)
-            {
-                a[k] = mixTo[k];
-                w[k] = float (memory + (1.0 - memory) * conductance[k]);
-            }
 
             for (wrap<fdn::size> i)
             {
-                w[fdn::cell (i, i)] = 0.0f;
+                for (wrap<fdn::size> j)
+                {
+                    if (i != j)
+                    {
+                        let k = fdn::cell (i, j);
+                        w[k] = float (fdn::effective (builtMemory, conductance[k]));
+                        total += float64 (w[k]);
+                    }
+                }
+
                 pressures[i] = float (pressure[i]);
-                delays[i] = float (1000.0 * float64 (fading[i] ? nextLength[i] : length[i]) / processor.frequency);
+                delays[i] = float (1000.0 * float64 (nextLength[i]) / processor.frequency);
             }
 
-            for (wrap<fdn::cells> k)
-                total += float64 (w[k]);
-
             matrixState <- w;
-            feedbackMatrix <- a;
+            feedbackMatrix <- mixTo;
             nodeEnergy <- pressures;
             nodeDelayMs <- delays;
 
@@ -754,7 +751,7 @@ namespace plugin
         /// so a steady or falling sound isn't touched.)
         float softenGain (float<2> u)
         {
-            let level = max (abs (u[0]), abs (u[1]));
+            let level = lib::peak (u);
 
             softFast = level > softFast ? level : softFast + softRelease * (level - softFast);
             softSlow += (level > softSlow ? softAttack : softRelease) * (level - softSlow);
@@ -766,10 +763,10 @@ namespace plugin
             return ratio >= 1.0f ? 1.0f : pow (ratio, soften);
         }
 
-        /// The input through the four allpasses on its side:
+        /// The input through the allpasses on its side:
         ///     w[n] = x[n] + g w[n - D],  y[n] = w[n - D] - g w[n]
         /// Each passes every frequency at unity gain, but spreads an impulse into a decaying train
-        /// of echoes, and four of them in series into a dense burst a few tens of ms long.
+        /// of echoes, and a chain of them in series into a dense burst a few tens of ms long.
         float<2> diffuse (float<2> u)
         {
             let g = diffusion;

@@ -52,7 +52,7 @@ let valueAt = (~shape, ~phase, ~steps, ~oneShot, ~seed, t: float) => {
 // The plot, in a box of the parent. Returns its redraw.
 let make = (ctx: Ctx.t, parent, box: box, ids: ids, ~seed=0.) => {
   let model = ctx.model
-  let plain = id => (model->ParamModel.def(id)).plain(model->ParamModel.get(id))
+  let plain = ParamModel.plain(model, _)
   let s = Plots.svg(parent, box)
   Plots.background(s, box)
   let (w, h) = (box.w - 6., box.h - 7.)

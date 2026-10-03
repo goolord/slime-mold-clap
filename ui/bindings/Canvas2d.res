@@ -42,7 +42,8 @@ external createLinearGradient: (context2d, float, float, float, float) => gradie
 type mediaQuery
 @val external matchMedia: string => mediaQuery = "matchMedia"
 @get external matches: mediaQuery => bool = "matches"
-let reducedMotion = () =>
-  try matchMedia("(prefers-reduced-motion: reduce)")->matches catch {
-  | _ => false
-  }
+// (the query is made once; its `matches` follows the setting)
+let reducedMotionQuery = try Some(matchMedia("(prefers-reduced-motion: reduce)")) catch {
+| _ => None
+}
+let reducedMotion = () => reducedMotionQuery->Option.mapOr(false, matches)

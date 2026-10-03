@@ -96,21 +96,25 @@ let make = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box: box) => {
   let (cx, cy) = (w / 2., h / 2.)
   let dishR = Math.min(w, h) / 2. - 7.
 
-  let plain = id => ParamModel.def(model, id).plain(ParamModel.get(model, id))
+  let plain = ParamModel.plain(model, _)
   let foodId = i => "food" ++ Int.toString(i + 1)
   let isFed = i => model->ParamModel.get(foodId(i)) != 0.
   let room = () => plain("roomSize")
 
   // the ring's radius for a room size, and back
-  let ringRadius = room => dishR * (0.32 + 0.4 * (room - 0.25) / 1.75)
-  let roomForRadius = r => 0.25 + 1.75 * (r / dishR - 0.32) / 0.4
+  let {min: roomMin, max: roomMax} = ParamModel.def(model, "roomSize")
+  let ringRadius = room => dishR * (0.32 + 0.4 * (room - roomMin) / (roomMax - roomMin))
+  let roomForRadius = r => roomMin + (roomMax - roomMin) * (r / dishR - 0.32) / 0.4
 
   //==============================================================================
   // the state drawn: the DSP's, or the starting network
 
   let startingConductance = () => FdnModel.effective(plain("memory"), 0.5)
   let conductance = (i, j) =>
-    bridge.conductance->PatchBridge.at(FdnModel.cell(i, j), ~fallback=startingConductance())
+    switch bridge.conductance->Option.flatMap(ws => ws[FdnModel.cell(i, j)]) {
+    | Some(w) => w
+    | None => startingConductance()
+    }
   let pressure = i => bridge.pressure->PatchBridge.at(i, ~fallback=0.)
   let delayMs = i =>
     switch bridge.delayMs {
@@ -334,7 +338,7 @@ let make = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box: box) => {
       let out = r * 1.3 + 14. + 16. * Math.abs(Math.cos(a))
       G.setFillStyle(g, rgba(pal.text, 0.85))
       let lx = Math.max(24., Math.min(w - 24., x + Math.cos(a) * out))
-      C.fillText(g, Float.toFixed(delayMs(i), ~digits=1) ++ " ms", lx, y + Math.sin(a) * out)
+      C.fillText(g, Param.msText(~digits=1, delayMs(i)), lx, y + Math.sin(a) * out)
     }
   }
 
@@ -425,14 +429,14 @@ let make = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box: box) => {
     }
   }
 
-  let fmt = (x, digits) => Float.toFixed(x, ~digits)
+  let fmt = Param.fixed
   let describe = hit =>
     switch hit {
     | Node(i) =>
       let samples = Math.round(delayMs(i) * FdnModel.referenceRate / 1000.)
-      let pressureText = bridge.pressure == None ? "" : `, at ${fmt(FdnModel.pressureDb(pressure(i)), 0)} dB`
+      let pressureText = bridge.pressure == None ? "" : `, at ${Param.dbText(~digits=0, FdnModel.pressureDb(pressure(i)))}`
       let foodText = isFed(i) ? "fed with the input: click to starve it" : "not fed: click to feed it the input"
-      `Line ${Int.toString(i + 1)}: ${fmt(delayMs(i), 1)} ms (${fmt(samples, 0)} samples at 48 kHz)${pressureText}; ${foodText}. Drag to stretch the room.`
+      `Line ${Int.toString(i + 1)}: ${Param.msText(~digits=1, delayMs(i))} (${fmt(samples, 0)} samples at 48 kHz)${pressureText}; ${foodText}. Drag to stretch the room.`
     | Tube(i, j) =>
       let (a, b) = (Int.toString(i + 1), Int.toString(j + 1))
       let matrixText =

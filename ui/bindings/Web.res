@@ -289,6 +289,7 @@ module Context2d = {
 // Scheduling and observers
 
 @val external requestAnimationFrame: (float => unit) => unit = "requestAnimationFrame"
+@val external performanceNow: unit => float = "performance.now"
 
 // Wraps f so that a burst of calls runs it once, when schedule calls back.
 let coalesce = (schedule, f) => {

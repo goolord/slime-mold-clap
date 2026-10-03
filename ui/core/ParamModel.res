@@ -53,6 +53,9 @@ let def = (t, id) =>
 
 let get = (t, id) => t.values->Map.get(id)->Option.getOr(0.)
 
+// The parameter's plain value (a logarithmic knob's frequency or time), as the DSP gets it.
+let plain = (t, id) => def(t, id).plain(get(t, id))
+
 // The parameter's value as the status line and the readouts show it.
 let longText = (t, id) => def(t, id).longText(get(t, id))
 let shortText = (t, id) => def(t, id).shortText(get(t, id))

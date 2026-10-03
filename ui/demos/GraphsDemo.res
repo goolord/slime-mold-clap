@@ -100,7 +100,7 @@ let testSignal = (ctx: Ctx.t) => {
     | None if !canEmit(ctx.pc) => ctx.toast("This connection can't fake the patch's messages (try the UI preview)")
     | None =>
       let model = ctx.model
-      let get = id => (model->ParamModel.def(id)).plain(model->ParamModel.get(id))
+      let get = ParamModel.plain(model, _)
       let start = Date.now()
       ctx.toast("Test signal on")
       timer := Some(setInterval(() => {

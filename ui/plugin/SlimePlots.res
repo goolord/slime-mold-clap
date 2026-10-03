@@ -13,7 +13,7 @@ module C = Canvas2d
 
 let rgba = Theme.rgba
 let tau = 2. * Math.Constants.pi
-let fmt = (x, digits) => Float.toFixed(x, ~digits)
+let fmt = Param.fixed
 
 type plot = {
   canvas: element,
@@ -67,7 +67,7 @@ let redrawOn = (ctx: Ctx.t, ids, draw) => {
 let plasticity = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
   let p = makePlot(parent, box)
   let model = ctx.model
-  let plain = id => ParamModel.def(model, id).plain(ParamModel.get(model, id))
+  let plain = ParamModel.plain(model, _)
   let maxFlux = 3.
   let (left, right, top, bottom) = (24., p.w - 6., 22., p.h - 18.)
   let xAt = q => left + (right - left) * q / maxFlux
@@ -79,22 +79,13 @@ let plasticity = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
     let settled = q => FdnModel.effective(memory, FdnModel.equilibrium(q, ~alpha, ~mu, ~gamma))
 
     // grid: conductance quarters, flux units
-    G.setLineWidth(p.g, 1.)
     for k in 0 to 4 {
-      let y = Math.round(yAt(Int.toFloat(k) / 4.)) + 0.5
-      G.setStrokeStyle(p.g, rgba(theme.ink, k == 0 ? 0.35 : 0.1))
-      G.beginPath(p.g)
-      G.moveTo(p.g, left, y)
-      G.lineTo(p.g, right, y)
-      G.stroke(p.g)
+      let y = CanvasStyle.snap(yAt(Int.toFloat(k) / 4.))
+      CanvasStyle.line(p.g, (left, y), (right, y), rgba(theme.ink, k == 0 ? 0.35 : 0.1))
     }
     for k in 0 to 3 {
-      let x = Math.round(xAt(Int.toFloat(k))) + 0.5
-      G.setStrokeStyle(p.g, rgba(theme.ink, k == 0 ? 0.35 : 0.1))
-      G.beginPath(p.g)
-      G.moveTo(p.g, x, top)
-      G.lineTo(p.g, x, bottom)
-      G.stroke(p.g)
+      let x = CanvasStyle.snap(xAt(Int.toFloat(k)))
+      CanvasStyle.line(p.g, (x, top), (x, bottom), rgba(theme.ink, k == 0 ? 0.35 : 0.1))
       k < 3
         ? text(p, ~align="center", ~colour=rgba(theme.ink, 0.5), Int.toString(k), x, bottom + 8.)
         : text(p, ~align="right", ~colour=rgba(theme.ink, 0.55), "flux", right, bottom + 8.)
@@ -173,10 +164,10 @@ let plasticity = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
 let decay = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
   let p = makePlot(parent, box)
   let model = ctx.model
-  let plain = id => ParamModel.def(model, id).plain(ParamModel.get(model, id))
+  let plain = ParamModel.plain(model, _)
   let (tMin, tMax, floorDb) = (0.005, 40., -66.)
   let (left, right, top, bottom) = (26., p.w - 6., 22., p.h - 18.)
-  let xAt = t => left + (right - left) * Math.log(Math.max(t, tMin) / tMin) / Math.log(tMax / tMin)
+  let xAt = Graph.logX(~lo=tMin, ~hi=tMax, ~left, ~right, ...)
   let yAt = db => top + (bottom - top) * Math.max(0., Math.min(1., db / floorDb))
 
   let draw = () => {
@@ -189,31 +180,21 @@ let decay = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
     }
     let meanLength = lengths->Array.reduce(0., (s, n) => s + Int.toFloat(n)) / Int.toFloat(FdnModel.size)
     let (dry, wet) = FdnModel.mixLevels(mix)
-    let toDb = x => x <= 1e-6 ? -120. : 20. * Math.log10(x)
-    let wetDb = toDb(wet * FdnModel.wetGain(lengths, ~t60))
-    let dryDb = toDb(dry)
+    let wetDb = Graph.gainDb(wet * FdnModel.wetGain(lengths, ~t60))
+    let dryDb = Graph.gainDb(dry)
     let low = FdnModel.decayTimeAt(100., ~t60, ~damping, ~meanLength)
     let high = FdnModel.decayTimeAt(6000., ~t60, ~damping, ~meanLength)
     let first = (delays[0]->Option.getOr(18.)) / 1000.
 
     // grid: 20 dB steps, decades of time
-    G.setLineWidth(p.g, 1.)
     [0., -20., -40., -60.]->Array.forEach(db => {
-      let y = Math.round(yAt(db)) + 0.5
-      G.setStrokeStyle(p.g, rgba(theme.ink, db == 0. ? 0.3 : 0.1))
-      G.beginPath(p.g)
-      G.moveTo(p.g, left, y)
-      G.lineTo(p.g, right, y)
-      G.stroke(p.g)
+      let y = CanvasStyle.snap(yAt(db))
+      CanvasStyle.line(p.g, (left, y), (right, y), rgba(theme.ink, db == 0. ? 0.3 : 0.1))
       text(p, ~align="right", ~colour=rgba(theme.ink, 0.5), fmt(db, 0), left - 4., y)
     })
     [(0.01, "10 ms"), (0.1, "0.1 s"), (1., "1 s"), (10., "10 s")]->Array.forEach(((t, label)) => {
-      let x = Math.round(xAt(t)) + 0.5
-      G.setStrokeStyle(p.g, rgba(theme.ink, 0.1))
-      G.beginPath(p.g)
-      G.moveTo(p.g, x, top)
-      G.lineTo(p.g, x, bottom)
-      G.stroke(p.g)
+      let x = CanvasStyle.snap(xAt(t))
+      CanvasStyle.line(p.g, (x, top), (x, bottom), rgba(theme.ink, 0.1))
       text(p, ~align="center", ~colour=rgba(theme.ink, 0.5), label, x, bottom + 8.)
     })
 
@@ -309,10 +290,8 @@ let matrix = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
     })
   }
 
-  let redraw = perFrame(draw)
+  let redraw = redrawOn(ctx, [], draw)
   bridge->PatchBridge.listen(redraw)
-  CanvasStyle.onThemeChange(redraw)
-  redraw()
 
   let describe = () =>
     switch (hover.contents, bridge.matrix) {

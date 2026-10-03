@@ -27,8 +27,6 @@ type t = {
   listeners: array<unit => unit>,
 }
 
-@val external now: unit => float = "performance.now"
-
 // A JSON array of exactly n numbers.
 let floats = (json: JSON.t, n) =>
   switch json {
@@ -66,7 +64,7 @@ let connect = pc => {
     pc->PatchConnection.addEndpointListener(endpoint, json =>
       decode(json)->Option.forEach(v => {
         store(v)
-        t.received = now()
+        t.received = Web.performanceNow()
         if notify {
           t.listeners->Array.forEach(f => f())
         }
@@ -83,7 +81,7 @@ let connect = pc => {
 let listen = (t, f) => t.listeners->Array.push(f)
 
 // Whether the patch has spoken lately.
-let isLive = t => t.received > 0. && now() - t.received < 600.
+let isLive = t => t.received > 0. && Web.performanceNow() - t.received < 600.
 
 // One value of an 8 x 8 array, or the fallback.
 let at = (xs: option<array<float>>, i, ~fallback) => xs->Option.flatMap(a => a[i])->Option.getOr(fallback)

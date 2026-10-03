@@ -45,19 +45,24 @@ Style.register(`
 
 @set external setInnerHtml: (element, string) => unit = "innerHTML"
 
-let fmt = (x, digits) => Float.toFixed(x, ~digits)
+let fmt = Param.fixed
 
 // The numbers under the matrix: its largest singular value (never above 1), how far it is from
 // lossless and how many iterations that took, and how much of the network is open.
 let vitals = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
   let root = el("div", ~cls="vitals", ~parent)->placeBox(box)
   let lines = [el("div", ~parent=root), el("div", ~parent=root), el("div", ~parent=root)]
-  let set = (i, html) => lines[i]->Option.forEach(e => e->setInnerHtml(html))
+  let shown = lines->Array.map(_ => "")
+  let set = (i, html) =>
+    if shown[i] != Some(html) {
+      shown[i] = html
+      lines[i]->Option.forEach(e => e->setInnerHtml(html))
+    }
   let update = () =>
     switch bridge.stats {
     | Some(s) =>
-      let memory = ParamModel.def(ctx.model, "memory").plain(ParamModel.get(ctx.model, "memory"))
-      let threshold = memory + 0.1 * (1. - memory)
+      // a tube is open once it has grown to a tenth
+      let threshold = FdnModel.effective(ParamModel.plain(ctx.model, "memory"), 0.1)
       let openTubes =
         bridge.conductance->Option.mapOr(0, ws =>
           ws->Array.reduceWithIndex(0, (n, w, k) =>
@@ -73,7 +78,7 @@ let vitals = (ctx: Ctx.t, bridge: PatchBridge.t, parent, box) => {
         1,
         `Lossless to <b>${s.unitarityError->Float.toExponential(~digits=1)}</b> after <b>${Int.toString(s.iterations)}</b> iterations`,
       )
-      set(2, `<b>${Int.toString(openTubes)}</b> of 56 tubes open, mean conductance <b>${fmt(s.meanConductance, 2)}</b>`)
+      set(2, `<b>${Int.toString(openTubes)}</b> of ${Int.toString(FdnModel.cells - FdnModel.size)} tubes open, mean conductance <b>${fmt(s.meanConductance, 2)}</b>`)
     | None =>
       set(0, "Waiting for the DSP")
       set(1, "")
@@ -94,9 +99,9 @@ let build = (ctx: Ctx.t, page) => {
   let dish = Panel.make(page, ~title="petri dish", ~x=margin, ~y=margin, ~w=492., ~h=492.)
   NetworkGraph.make(ctx, bridge, dish.el, {x: 5., y: 22., w: 480., h: 464.})->ignore
 
-  // a panel with its plot on the left and four test tubes on the right
+  // a panel with its plot on the left and its test tubes on the right
   let column = Panel.right(dish)
-  let width = 1000. - margin - column
+  let width = Style.designWidth - margin - column
   let group = (~title, ~y, ~h, ~plot, tubes) => {
     let panel = Panel.make(page, ~title, ~x=column, ~y, ~w=width, ~h)
     let plotWidth = 210.

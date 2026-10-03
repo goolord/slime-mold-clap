@@ -17,7 +17,7 @@
 //     (a delay, a reverb) keeps returning true until its tail has died away, and skips its
 //     work while it is idle and fed silence.
 //   - Nothing here reads a parameter endpoint: how parameters reach an effect is the plugin's
-//     business (dsp/Processor.cmajor fills the structs from the generated params::Values).
+//     business (a plugin fills the structs from the generated params::Values).
 
 namespace lib
 {
